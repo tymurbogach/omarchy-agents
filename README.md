@@ -101,10 +101,13 @@ also counts OpenCode rows with `providerID` `kimi-for-coding` or `moonshot`,
 which no other collector claims. This shows Kimi use even when the model runs
 inside Codex, Claude Code, or another third-party tool.
 
-For limits, the collector refreshes the stored OAuth credential in memory
-only, then asks the coding API usage endpoint. It never writes credentials or
-their values to the panel record, cache, or logs. The panel shows the rolling
-5-hour and 7-day windows plus the membership tier from the account profile.
+For limits, the collector refreshes the stored OAuth credential when it is
+close to expiry, then asks the coding API usage endpoint. A rotated
+credential is written back to the CLI's credentials file the same way the
+CLI writes it (atomic write, mode 0600, kept only if no newer rotation
+landed meanwhile). Credentials and their values never reach the panel
+record, cache, or logs. The panel shows the enforced weekly pool plus the
+rolling 5-hour window, with the membership tier from the account profile.
 If the login expires, run `/login` in Kimi Code again. Without a login the
 panel still shows local Kimi statistics with no false authentication error.
 

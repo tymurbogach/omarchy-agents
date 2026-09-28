@@ -2,25 +2,27 @@
 """Write a Kimi Code usage record for the Omarchy agents panel.
 
 The collector reads only local Kimi Code data: native session wire logs and
-the OpenCode database rows that ran on a Kimi provider. It refreshes the
-stored OAuth credential in memory only, sends it solely to Kimi's own
-endpoints, and never writes credentials or their values to a record, cache,
-or log.
+the OpenCode database rows that ran on a Kimi provider. It sends the stored
+OAuth credential solely to Kimi's own endpoints, persists a rotated
+credential back to the CLI's credentials file (atomic write, mode 0600,
+compare-and-swap against concurrent CLI refreshes), and never writes
+credentials or their values to a record, cache, or log.
 """
 
 from __future__ import annotations
 
 import argparse
-import configparser
 import datetime as dt
 import glob
 import json
+import math
 import os
 from pathlib import Path
 import sqlite3
 import sys
 import tempfile
 import time
+import tomllib
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -47,6 +49,11 @@ def home() -> Path:
 
 
 def kimi_dir() -> Path:
+    # The CLI relocates its whole data root with KIMI_CODE_HOME; sessions,
+    # config, and credentials all move together.
+    override = os.environ.get("KIMI_CODE_HOME", "").strip()
+    if override:
+        return Path(override).expanduser()
     return home() / ".kimi-code"
 
 
@@ -359,46 +366,126 @@ def stats_from_aggregate(aggregate: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def managed_provider() -> dict[str, str]:
+    """Read the managed kimi-code provider block from config.toml.
+
+    Returns base_url, oauth_host, and the oauth credential key name. The
+    key is a file reference, not a secret.
+    """
+    provider = {"base_url": "", "oauth_host": "", "key": "", "storage": "file"}
+    try:
+        with open(config_path(), "rb") as stream:
+            config = tomllib.load(stream)
+    except (OSError, tomllib.TOMLDecodeError):
+        return provider
+    try:
+        managed = config.get("providers", {}).get("managed:kimi-code", {})
+    except AttributeError:
+        return provider
+    if not isinstance(managed, dict):
+        return provider
+    base = managed.get("base_url")
+    if isinstance(base, str) and base.strip():
+        provider["base_url"] = base.strip().rstrip("/")
+    oauth = managed.get("oauth")
+    if isinstance(oauth, dict):
+        for field in ("oauth_host", "key", "storage"):
+            value = oauth.get(field)
+            if isinstance(value, str) and value.strip():
+                provider[field] = value.strip()
+    return provider
+
+
 def configured_endpoints() -> tuple[list[str], list[str]]:
-    """Read the managed provider's hosts from config.toml (names only)."""
+    """Managed provider hosts first, compiled-in defaults after."""
+    provider = managed_provider()
     api_bases = list(API_BASES)
     oauth_hosts = list(OAUTH_HOSTS)
-    try:
-        text = config_path().read_text(encoding="utf-8")
-    except OSError:
-        return api_bases, oauth_hosts
-    try:
-        parser = configparser.ConfigParser()
-        parser.read_string(text)
-    except configparser.Error:
-        return api_bases, oauth_hosts
-    for section in parser.sections():
-        if section != 'providers."managed:kimi-code"':
-            continue
-        base = parser.get(section, "base_url", fallback="").strip().rstrip("/")
-        host = parser.get(section, "oauth_host", fallback="").strip().rstrip("/")
-        if base and base not in api_bases:
-            api_bases.insert(0, base)
-        if host and host not in oauth_hosts:
-            oauth_hosts.insert(0, host)
+    if provider["base_url"] and provider["base_url"] not in api_bases:
+        api_bases.insert(0, provider["base_url"])
+    if provider["oauth_host"] and provider["oauth_host"] not in oauth_hosts:
+        oauth_hosts.insert(0, provider["oauth_host"])
     return api_bases, oauth_hosts
 
 
-def stored_credential() -> dict[str, Any]:
+def credential_path_for_key(key: str) -> Path | None:
+    # The oauth key looks like "oauth/<name>"; the CLI stores it as
+    # credentials/<name>.json. Reject traversal: basename only.
+    parts = key.replace("\\", "/").split("/")
+    if any(part in (".", "..") for part in parts):
+        return None
+    name = parts[-1].strip() if parts else ""
+    if not name or name.startswith("."):
+        return None
+    if any(sep in name for sep in ("/", "\\")):
+        return None
+    return kimi_dir() / "credentials" / (name + ".json")
+
+
+def has_refresh_token(data: Any) -> bool:
+    return isinstance(data, dict) and isinstance(data.get("refresh_token"), str) and bool(data["refresh_token"].strip())
+
+
+def stored_credential() -> tuple[Path | None, dict[str, Any]]:
+    """Return the managed OAuth credential file and its content.
+
+    Prefers the credential referenced by config.toml's oauth key; falls
+    back to the first credentials file carrying a refresh token.
+    """
+    provider = managed_provider()
+    if provider["key"] and provider.get("storage", "file") == "file":
+        path = credential_path_for_key(provider["key"])
+        if path is not None:
+            data = read_json(path)
+            if has_refresh_token(data):
+                return path, data
     candidates = sorted(glob.glob(str(kimi_dir() / "credentials" / "*.json")))
-    for path in candidates:
-        data = read_json(Path(path))
-        if isinstance(data, dict) and isinstance(data.get("refresh_token"), str) and data["refresh_token"]:
-            return data
-    return {}
+    for candidate in candidates:
+        path = Path(candidate)
+        data = read_json(path)
+        if has_refresh_token(data):
+            return path, data
+    return None, {}
 
 
-def refresh_access_token(refresh_token: str, oauth_hosts: list[str]) -> str:
+def refresh_threshold_seconds(expires_in: Any) -> int:
+    # Same rule as the CLI's OAuthManager: half the lifetime, at least 5 min.
+    try:
+        lifetime = float(expires_in)
+    except (TypeError, ValueError):
+        return 300
+    if not math.isfinite(lifetime) or lifetime <= 0:
+        return 300
+    return max(300, int(lifetime * 0.5))
+
+
+def credential_needs_refresh(credential: dict[str, Any]) -> bool:
+    token = credential.get("access_token")
+    if not isinstance(token, str) or not token:
+        return True
+    try:
+        remaining = float(credential.get("expires_at", 0)) - time.time()
+    except (TypeError, ValueError):
+        return True
+    if not math.isfinite(remaining):
+        return True
+    return remaining < refresh_threshold_seconds(credential.get("expires_in"))
+
+
+def post_refresh_token(refresh_token: str, oauth_hosts: list[str]) -> tuple[dict[str, Any] | None, str | None]:
+    """Exchange a refresh token. Returns (token_info, error).
+
+    token_info uses the CLI wire names (snake_case). error is None on
+    success, "auth" when the server rejected the grant, "network"
+    otherwise. Never raises, never logs secrets.
+    """
     payload = urllib.parse.urlencode({
         "grant_type": "refresh_token",
         "refresh_token": refresh_token,
         "client_id": OAUTH_CLIENT_ID,
     }).encode()
+    token_info: dict[str, Any] | None = None
+    error: str | None = "network"
     for host in oauth_hosts:
         request = urllib.request.Request(
             host + "/api/oauth/token",
@@ -406,65 +493,269 @@ def refresh_access_token(refresh_token: str, oauth_hosts: list[str]) -> str:
             headers={"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json", "User-Agent": USER_AGENT},
         )
         try:
-            with urllib.request.urlopen(request, timeout=5) as response:
+            with urllib.request.urlopen(request, timeout=8) as response:
                 data = json.loads(response.read().decode("utf-8"))
-        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError):
+        except urllib.error.HTTPError as http_error:
+            if http_error.code in (401, 403):
+                return None, "auth"
+            error = "network"
             continue
-        except urllib.error.HTTPError:
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError, ValueError):
+            error = "network"
             continue
-        if isinstance(data, dict) and isinstance(data.get("access_token"), str) and data["access_token"]:
-            return data["access_token"]
-    return ""
+        if not isinstance(data, dict):
+            error = "network"
+            continue
+        access = data.get("access_token")
+        refresh = data.get("refresh_token")
+        try:
+            lifetime = float(data.get("expires_in"))
+        except (TypeError, ValueError):
+            lifetime = float("nan")
+        if not isinstance(access, str) or not access or not isinstance(refresh, str) or not refresh:
+            error = "network"
+            continue
+        if not math.isfinite(lifetime) or lifetime <= 0:
+            error = "network"
+            continue
+        now = int(time.time())
+        token_info = {
+            "access_token": access,
+            "refresh_token": refresh,
+            "expires_at": now + int(lifetime),
+            "expires_in": int(lifetime),
+            "scope": data.get("scope") if isinstance(data.get("scope"), str) else "",
+            "token_type": data.get("token_type") if isinstance(data.get("token_type"), str) else "Bearer",
+        }
+        error = None
+        break
+    return token_info, error
 
 
-def access_token(credential: dict[str, Any], oauth_hosts: list[str]) -> str:
-    token = credential.get("access_token") if isinstance(credential.get("access_token"), str) else ""
-    if token and number(credential.get("expires_at")) - int(time.time()) > 60:
-        return token
-    refresh = credential.get("refresh_token") if isinstance(credential.get("refresh_token"), str) else ""
-    if not refresh:
-        return token
-    # In memory only: the CLI owns the credentials file, never overwrite it.
-    return refresh_access_token(refresh, oauth_hosts) or token
+def save_credential(path: Path, token_info: dict[str, Any]) -> bool:
+    """Atomically persist a refreshed credential (mode 0600, fsync).
+
+    Only ever writes the CLI's own wire shape; never touches record/cache.
+    """
+    payload = {
+        "access_token": token_info.get("access_token", ""),
+        "refresh_token": token_info.get("refresh_token", ""),
+        "expires_at": number(token_info.get("expires_at")),
+        "scope": str(token_info.get("scope") or ""),
+        "token_type": str(token_info.get("token_type") or "Bearer"),
+        "expires_in": number(token_info.get("expires_in")),
+    }
+    try:
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        try:
+            os.chmod(path.parent, 0o700)
+        except OSError:
+            pass
+        handle, temporary = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".", suffix=".tmp")
+        try:
+            with os.fdopen(handle, "w", encoding="utf-8") as stream:
+                json.dump(payload, stream, indent=2)
+                stream.write("\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+        except Exception:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
+            return False
+        try:
+            os.chmod(temporary, 0o600)
+            os.replace(temporary, path)
+        except OSError:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
+            return False
+        try:
+            dir_fd = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        except OSError:
+            pass
+        return True
+    except OSError:
+        return False
 
 
-def fetch_json(url: str, token: str) -> dict[str, Any] | None:
+def resolve_access_token() -> tuple[str, str | None]:
+    """Return (access_token, error) using the CLI-compatible lifecycle.
+
+    Reads the managed credential, refreshes it when within the CLI's
+    threshold, and persists the rotation with a compare-and-swap re-read:
+    if another CLI process rotated the file while our refresh was in
+    flight, the peer's newer credential wins and ours is discarded.
+    error is None on success, "auth" when the grant was rejected,
+    "network" when the refresh or storage failed.
+    """
+    oauth_hosts = configured_endpoints()[1]
+    path, credential = stored_credential()
+    if path is None:
+        return "", "auth"
+    if not credential_needs_refresh(credential):
+        token = credential.get("access_token")
+        return (token if isinstance(token, str) else ""), None
+    refresh = credential.get("refresh_token")
+    if not isinstance(refresh, str) or not refresh:
+        return (credential.get("access_token") if isinstance(credential.get("access_token"), str) else ""), "auth"
+    used_refresh = refresh
+    token_info, error = post_refresh_token(refresh, oauth_hosts)
+    if token_info is None:
+        # Auth rejection: leave the CLI's file alone (no tombstone from
+        # here); the CLI records that itself on its next run.
+        if error == "auth":
+            return "", "auth"
+        return (credential.get("access_token") if isinstance(credential.get("access_token"), str) else ""), "network"
+    # Compare-and-swap: re-read before writing; a peer rotation wins.
+    current = read_json(path)
+    if has_refresh_token(current) and current.get("refresh_token") != used_refresh:
+        token = current.get("access_token")
+        return (token if isinstance(token, str) else ""), None
+    if not save_credential(path, token_info):
+        return token_info["access_token"], "network"
+    return token_info["access_token"], None
+
+
+def fetch_json(url: str, token: str) -> tuple[dict[str, Any] | None, str | None]:
+    """GET a JSON endpoint. Returns (payload, error).
+
+    error is None on success, "auth" on 401/403, "network" otherwise.
+    HTTPError is caught before URLError: it subclasses it.
+    """
     request = urllib.request.Request(
         url,
         headers={"Authorization": "Bearer " + token, "Accept": "application/json", "User-Agent": USER_AGENT},
     )
     try:
-        with urllib.request.urlopen(request, timeout=5) as response:
+        with urllib.request.urlopen(request, timeout=8) as response:
             payload = json.loads(response.read().decode("utf-8"))
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError):
+    except urllib.error.HTTPError as http_error:
+        if http_error.code in (401, 403):
+            return None, "auth"
+        return None, "network"
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError, ValueError):
+        return None, "network"
+    return (payload if isinstance(payload, dict) else None), (None if isinstance(payload, dict) else "network")
+
+
+def ratio_used(limit_value: Any, used_value: Any) -> float | None:
+    try:
+        limit = float(limit_value)
+        used = float(used_value)
+    except (TypeError, ValueError):
         return None
-    except urllib.error.HTTPError as error:
-        if error.code in (401, 403):
-            return None
+    if not math.isfinite(limit) or not math.isfinite(used):
         return None
-    return payload if isinstance(payload, dict) else None
+    if not limit > 0 or used < 0:
+        return None
+    return max(0.0, min(1.0, used / limit))
+
+
+def finite_ratio(value: Any) -> float | None:
+    try:
+        ratio = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(ratio) or ratio < 0:
+        return None
+    return max(0.0, min(1.0, ratio))
+
+
+def window_label_for_duration(duration: Any, unit: Any) -> str:
+    """Map a rolling-window duration to a panel label, exactly.
+
+    Only the durations the API actually emits are recognised: 300 minutes
+    (5-hour session), 10080 minutes (7-day week), and month-scale windows.
+    Anything else is skipped rather than mislabelled.
+    """
+    try:
+        amount = float(duration)
+    except (TypeError, ValueError):
+        return ""
+    if not math.isfinite(amount) or amount <= 0:
+        return ""
+    text = str(unit or "").upper()
+    if "SECOND" in text:
+        amount = amount / 60.0
+    elif "HOUR" in text:
+        amount = amount * 60.0
+    elif "DAY" in text:
+        amount = amount * 24.0 * 60.0
+    elif "MINUTE" not in text:
+        return ""
+    minutes = int(round(amount))
+    if minutes == 300:
+        return "Session (5-hour)"
+    if minutes == 10080:
+        return "Weekly (7-day)"
+    if minutes in (43200, 43800, 525600 // 12):
+        return "Monthly"
+    return ""
 
 
 def limits_from_usage_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:
-    usages = payload.get("usages") if isinstance(payload.get("usages"), dict) else {}
-    windows = (
-        ("limit_5h", "Session (5-hour)"),
-        ("limit_7d", "Weekly (7-day)"),
-        ("limit_month_total", "Monthly"),
-        ("limit_month_code", "Monthly"),
-    )
-    limits = []
-    for key, label in windows:
-        entry = usages.get(key)
-        if not isinstance(entry, dict):
+    # The `usages.*.used_ratio` block feeds the CLI's /usage display but stays
+    # at zero while the server enforces the quota, so it only fills windows
+    # the authoritative blocks did not provide. The enforced state lives in
+    # top-level `usage` (weekly pool, used/limit) and in `limits[]` (rolling
+    # windows, used or remaining over limit).
+    limits: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def add(label: str, percent: float | None, resets_at: Any) -> None:
+        if not label or label in seen or percent is None:
+            return
+        if not math.isfinite(percent) or percent < 0:
+            return
+        seen.add(label)
+        reset = resets_at if isinstance(resets_at, str) else ""
+        limits.append({"label": label, "percent": max(0.0, min(1.0, percent)), "resetsAt": reset})
+
+    head = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
+    add("Weekly (7-day)", ratio_used(head.get("limit"), head.get("used")), head.get("resetTime"))
+
+    windows = payload.get("limits") if isinstance(payload.get("limits"), list) else []
+    for window in windows:
+        if not isinstance(window, dict):
             continue
-        try:
-            percent = float(entry.get("used_ratio"))
-        except (TypeError, ValueError):
+        frame = window.get("window") if isinstance(window.get("window"), dict) else {}
+        label = window_label_for_duration(frame.get("duration"), frame.get("timeUnit"))
+        if not label:
             continue
-        if percent < 0:
-            continue
-        limits.append({"label": label, "percent": min(1.0, percent), "resetsAt": str(entry.get("reset_time") or "")})
+        detail = window.get("detail") if isinstance(window.get("detail"), dict) else {}
+        percent = ratio_used(detail.get("limit"), detail.get("used"))
+        if percent is None and detail.get("remaining") is not None:
+            remaining = ratio_used(detail.get("limit"), detail.get("remaining"))
+            percent = 1.0 - remaining if remaining is not None else None
+        add(label, percent, detail.get("resetTime"))
+
+    if not limits:
+        usages = payload.get("usages") if isinstance(payload.get("usages"), dict) else {}
+        for key, label in (("limit_5h", "Session (5-hour)"), ("limit_7d", "Weekly (7-day)"),
+                           ("limit_month_total", "Monthly"), ("limit_month_code", "Monthly")):
+            entry = usages.get(key)
+            if not isinstance(entry, dict):
+                continue
+            add(label, finite_ratio(entry.get("used_ratio")), entry.get("reset_time"))
+    else:
+        # Authoritative windows exist: only fill gaps from the display block.
+        usages = payload.get("usages") if isinstance(payload.get("usages"), dict) else {}
+        for key, label in (("limit_5h", "Session (5-hour)"), ("limit_7d", "Weekly (7-day)"),
+                           ("limit_month_total", "Monthly"), ("limit_month_code", "Monthly")):
+            if label in seen:
+                continue
+            entry = usages.get(key)
+            if not isinstance(entry, dict):
+                continue
+            add(label, finite_ratio(entry.get("used_ratio")), entry.get("reset_time"))
     return limits
 
 
@@ -483,39 +774,63 @@ def collect(force: bool, limits_only: bool) -> dict[str, Any]:
             aggregate, last_row_id = scan_opencode_database(database, aggregate, cache, rebuilt, force)
 
     stats = stats_from_aggregate(aggregate)
-    api_bases, oauth_hosts = configured_endpoints()
-    credential = stored_credential()
+    api_bases = configured_endpoints()[0]
     tier_label = "Kimi Code"
     status = ""
     help_text = ""
     retry = False
     limits = cache.get("limits") or []
-    token = access_token(credential, oauth_hosts) if credential else ""
+    token, token_error = resolve_access_token()
     if token:
-        fresh_limits: list[dict[str, Any]] | None = None
-        reachable = False
+        fresh_limits: list[dict[str, Any]] = []
+        windowless = False
+        auth_failed = False
+        network_failed = False
         for base in api_bases:
-            payload = fetch_json(base + "/usages", token)
-            if payload is None:
+            payload, fetch_error = fetch_json(base + "/usages", token)
+            if fetch_error == "auth":
+                auth_failed = True
                 continue
-            reachable = True
-            fresh_limits = limits_from_usage_payload(payload)
-            profile = fetch_json(base + "/me", token)
+            if fetch_error is not None or payload is None:
+                network_failed = True
+                continue
+            candidate = limits_from_usage_payload(payload)
+            profile, _ = fetch_json(base + "/me", token)
             if isinstance(profile, dict) and str(profile.get("user_level_name") or "").strip():
                 tier_label = str(profile["user_level_name"]).strip()
-            break
+            if candidate:
+                fresh_limits = candidate
+                break
+            windowless = True
         if fresh_limits:
             limits = fresh_limits
             cache["limits"] = limits
-        elif not limits:
-            if not reachable:
-                status = "Kimi Code limits unavailable."
+        elif windowless:
+            # Reachable but windowless: keep cached windows and retry soon
+            # rather than presenting zeros as fresh quota.
+            retry = True
+            if not limits and number(stats.get("totalPrompts")) <= 0:
+                help_text = "Run /login in Kimi Code to restore quota."
+        elif auth_failed:
+            # The token (or its refresh) was rejected: cached windows stay
+            # visible but the panel must say re-login is needed.
+            status = "Kimi Code authentication expired."
+            help_text = "Run /login in Kimi Code to restore quota."
+        elif network_failed:
+            if limits:
                 retry = True
             else:
-                help_text = "Run /login in Kimi Code to restore quota."
+                status = "Kimi Code limits unavailable."
+                help_text = "Check the network connection and refresh."
+                retry = True
     else:
+        # No usable credential: local stats stay, limits clear.
         limits = []
-        if number(stats.get("totalPrompts")) <= 0:
+        if token_error == "network":
+            status = "Kimi Code limits unavailable."
+            help_text = "Check the network connection and refresh."
+            retry = True
+        elif number(stats.get("totalPrompts")) <= 0:
             help_text = "Run /login in Kimi Code to authenticate."
     try:
         database = opencode_database_path()
