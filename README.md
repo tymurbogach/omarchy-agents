@@ -188,9 +188,13 @@ only adds the meter and the spent-of-funded line under the real figure.
   `x` hides it, `j`/`k` scroll, `r` or Enter refresh,
   Tab moves to the neighboring bar panel, Esc closes.
 - Chips: drag sideways to reorder, right-click for move/hide.
+  The selected or hovered chip shows a × that hides it directly.
+  The default agent's chip wears a dot underneath.
   Hidden subscriptions collect in a HIDDEN tray with per-agent restore;
   hiding also stops their scans. The switch row needs two visible agents,
   so the last one cannot hide itself out of the bar.
+- Default agent button at the bottom names the agent `omarchy agent`
+  launches and opens Omarchy's picker to change it.
 - IPC: `omarchy-shell omarchy.agents <open|close|toggle|refresh|next>`.
 
 ## Settings

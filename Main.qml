@@ -148,6 +148,35 @@ Item {
     if (syncConfigured()) scheduleSync()
   }
 
+  // ------------------------------------------------------- default agent
+  //
+  // Omarchy's preferred agent lives outside this widget, in
+  // ~/.config/omarchy/defaults/agent. Watch it so the panel always names
+  // the agent `omarchy agent` would launch, and so the matching chip can
+  // wear the default marker.
+  property string defaultAgentId: ""
+
+  FileView {
+    path: root.home + "/.config/omarchy/defaults/agent"
+    watchChanges: true
+    printErrors: false
+    onFileChanged: reload()
+    onLoaded: root.defaultAgentId = String(text() || "").trim().split("\n")[0].trim()
+    onLoadFailed: root.defaultAgentId = ""
+  }
+
+  function defaultAgentName() {
+    var names = {
+      pi: "Pi", omp: "Oh My Pi", opencode: "OpenCode", claude: "Claude Code",
+      codex: "Codex", crush: "Crush", grok: "Grok", gemini: "Gemini",
+      openclaw: "OpenClaw", hermes: "Hermes", copilot: "GitHub Copilot",
+      muse: "Muse Code", "cursor-agent": "Cursor CLI"
+    }
+    var id = String(defaultAgentId || "")
+    if (id === "") return ""
+    return names[id] || id
+  }
+
   // -------------------------------------------------------------- refresh
 
   property int refreshIntervalSec: Math.max(30, Number(setting("refreshIntervalSec", 900)))

@@ -564,6 +564,56 @@ Panel {
                   color: root.foreground
                 }
 
+                // Default-agent marker: a dot under the chip whose provider
+                // matches Omarchy's default agent (claude/codex/opencode).
+                Rectangle {
+                  visible: usage.defaultAgentId !== "" && modelData.providerId === usage.defaultAgentId
+                  width: Style.space(4)
+                  height: width
+                  radius: width / 2
+                  color: root.foreground
+                  anchors.horizontalCenter: parent.horizontalCenter
+                  anchors.bottom: parent.bottom
+                  anchors.bottomMargin: Style.space(3)
+                }
+
+                // Visible hide affordance on the selected or hovered chip.
+                // Sits above dragArea so its press never starts a drag.
+                Text {
+                  id: chipClose
+                  visible: root.providers.length > 1
+                    && (index === root.providerIndex || chipButton.hot)
+                    && !providerSwitch.dragging
+                  textFormat: Text.PlainText
+                  text: "×"
+                  color: root.dim
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.bodySmall
+                  anchors.top: parent.top
+                  anchors.right: parent.right
+                  anchors.topMargin: Style.space(1)
+                  anchors.rightMargin: Style.space(4)
+                  z: 20
+
+                  MouseArea {
+                    id: closeArea
+                    anchors.fill: parent
+                    anchors.margins: -Style.space(6)
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    acceptedButtons: Qt.LeftButton
+                    onEntered: chipClose.color = root.foreground
+                    onExited: chipClose.color = root.dim
+                    onClicked: usage.setProviderEnabled(modelData.providerId, false)
+                  }
+
+                  PanelToolTip {
+                    visible: closeArea.containsMouse
+                    text: "Hide " + modelData.providerName
+                    fontFamily: root.fontFamily
+                  }
+                }
+
                 MouseArea {
                   id: dragArea
                   anchors.fill: parent
@@ -924,6 +974,28 @@ Panel {
                 share: modelData.total / Math.max(1, root.models[0].total)
               }
             }
+          }
+
+          // ---------- Default agent ----------
+          // The agent `omarchy agent` launches. Opens Omarchy's own picker,
+          // so this panel never reimplements the agent list.
+          Button {
+            width: parent.width
+            text: usage.defaultAgentName() !== ""
+              ? ("Default agent: " + usage.defaultAgentName())
+              : "Choose default agent"
+            leftAlign: true
+            bordered: true
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+            fontSize: Style.font.bodySmall
+            verticalPadding: Style.spacing.controlPaddingY
+            tooltipText: "Change the agent Omarchy launches"
+            onClicked: {
+              if (root.bar) root.bar.run("omarchy-agent --pick")
+              root.close()
+            }
+            onHovered: function(isHovered) { if (isHovered) root.cursorActive = true }
           }
 
           Text {
