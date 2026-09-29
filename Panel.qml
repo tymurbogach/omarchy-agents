@@ -484,10 +484,107 @@ Panel {
             wrapMode: Text.WordWrap
           }
 
+          // ---------- Tabs header ----------
+          // Names the default agent (the lit chip) and holds the compact
+          // restore button for hidden subscriptions.
+          Item {
+            id: tabsHeader
+            visible: root.providers.length > 0
+            width: parent.width
+            implicitHeight: Math.max(tabsNotice.implicitHeight, hiddenButton.implicitHeight)
+
+            Text {
+              id: tabsNotice
+              textFormat: Text.PlainText
+              text: usage.defaultAgentName() !== ""
+                ? ("● " + usage.defaultAgentName() + " is the default — double-click a tab to change it")
+                : "No default agent — double-click a tab (Claude, Codex, OpenCode)"
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              elide: Text.ElideRight
+              anchors.left: parent.left
+              anchors.right: hiddenButton.left
+              anchors.rightMargin: Style.spacing.sm
+              anchors.verticalCenter: parent.verticalCenter
+            }
+
+            Button {
+              id: hiddenButton
+              visible: root.hiddenProviders.length > 0
+              text: "+" + (root.hiddenProviders.length > 1 ? root.hiddenProviders.length : "")
+              bordered: true
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              fontSize: Style.font.bodySmall
+              verticalPadding: Style.spacing.controlPaddingY
+              tooltipText: "Show a hidden subscription"
+              anchors.right: parent.right
+              anchors.verticalCenter: parent.verticalCenter
+              onClicked: {
+                hiddenMenu.anchorItem = hiddenButton
+                hiddenMenu.open = true
+              }
+              onHovered: function(isHovered) { if (isHovered) root.cursorActive = true }
+            }
+          }
+
+          // ---------- Hidden menu ----------
+          // Compact replacement for the old HIDDEN section: one dropdown
+          // listing hidden subscriptions to restore.
+          PopupCard {
+            id: hiddenMenu
+            anchorItem: button
+            bar: root.bar
+            owner: null
+            contentWidth: hiddenMenu.fittedContentWidth(Style.space(220))
+            contentHeight: hiddenMenu.fittedContentHeight(hiddenMenuColumn.implicitHeight)
+
+            Column {
+              id: hiddenMenuColumn
+              width: parent.width
+              spacing: Style.spacing.sm
+
+              Repeater {
+                model: root.hiddenProviders
+
+                Button {
+                  required property var modelData
+                  width: parent.width
+                  text: modelData.providerName
+                  leftAlign: true
+                  foreground: root.foreground
+                  fontFamily: root.fontFamily
+                  fontSize: Style.font.bodySmall
+                  onClicked: {
+                    usage.setProviderEnabled(modelData.providerId, true)
+                    hiddenMenu.open = false
+                  }
+                }
+              }
+
+              Button {
+                visible: root.hiddenProviders.length > 1
+                width: parent.width
+                text: "Show all"
+                leftAlign: true
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                fontSize: Style.font.bodySmall
+                onClicked: {
+                  for (var i = 0; i < root.hiddenProviders.length; i++)
+                    usage.setProviderEnabled(root.hiddenProviders[i].providerId, true)
+                  hiddenMenu.open = false
+                }
+              }
+            }
+          }
+
           // ---------- Provider switch ----------
           // Chips drag to reorder: a transparent MouseArea above each Button
           // owns the left press, so taps select manually here and drags move
           // the chip. Right presses fall through to the Button's menu.
+          // Double-click sets the Omarchy default agent where one exists.
           Row {
             id: providerSwitch
             visible: root.providers.length > 1
@@ -550,20 +647,6 @@ Panel {
                   onHovered: function(isHovered) { if (isHovered) root.cursorActive = true }
                 }
 
-                // Insertion mark at the left edge of the drop target slot.
-                Rectangle {
-                  visible: providerSwitch.dragging
-                    && providerSwitch.dragTo === index
-                    && providerSwitch.dragFrom !== index
-                  width: Math.max(2, Style.space(2))
-                  anchors.top: parent.top
-                  anchors.bottom: parent.bottom
-                  anchors.left: parent.left
-                  anchors.leftMargin: -providerSwitch.spacing / 2 - width / 2
-                  radius: width / 2
-                  color: root.foreground
-                }
-
                 // Default-agent marker: a dot under the chip whose provider
                 // matches Omarchy's default agent (claude/codex/opencode).
                 Rectangle {
@@ -578,32 +661,34 @@ Panel {
                 }
 
                 // Visible hide affordance on the selected or hovered chip.
-                // Sits above dragArea so its press never starts a drag.
-                Text {
+                // A fixed box inside the chip: expanding past the edges
+                // reached the Flickable scrollbar on the last chip.
+                Item {
                   id: chipClose
                   visible: root.providers.length > 1
                     && (index === root.providerIndex || chipButton.hot)
                     && !providerSwitch.dragging
-                  textFormat: Text.PlainText
-                  text: "×"
-                  color: root.dim
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.bodySmall
+                  width: Style.space(22)
+                  height: Style.space(22)
                   anchors.top: parent.top
                   anchors.right: parent.right
-                  anchors.topMargin: Style.space(1)
-                  anchors.rightMargin: Style.space(4)
                   z: 20
+
+                  Text {
+                    textFormat: Text.PlainText
+                    text: "×"
+                    color: closeArea.containsMouse ? root.foreground : root.dim
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.bodySmall
+                    anchors.centerIn: parent
+                  }
 
                   MouseArea {
                     id: closeArea
                     anchors.fill: parent
-                    anchors.margins: -Style.space(6)
                     hoverEnabled: true
                     cursorShape: Qt.PointingHandCursor
                     acceptedButtons: Qt.LeftButton
-                    onEntered: chipClose.color = root.foreground
-                    onExited: chipClose.color = root.dim
                     onClicked: usage.setProviderEnabled(modelData.providerId, false)
                   }
 
@@ -618,6 +703,7 @@ Panel {
                   id: dragArea
                   anchors.fill: parent
                   acceptedButtons: Qt.LeftButton
+                  onDoubleClicked: usage.setDefaultAgent(modelData.providerId)
                   property real pressX: 0
                   property real pressRowX: 0
                   property bool moved: false
@@ -657,74 +743,18 @@ Panel {
                 }
               }
             }
-          }
 
-          // ---------- Hidden providers ----------
-          // Hiding stops the collector too, so this tray is the way back:
-          // without it a hidden subscription could only return via shell.json.
-          Column {
-            id: hiddenSection
-            visible: root.hiddenProviders.length > 0
-            width: parent.width
-            spacing: Style.spacing.md
-
-            PanelSectionHeader {
-              width: parent.width
-              text: "HIDDEN"
-              foreground: root.foreground
-              fontFamily: root.fontFamily
-            }
-
-            Repeater {
-              model: root.hiddenProviders
-
-              Item {
-                required property var modelData
-                width: hiddenSection.width
-                implicitHeight: Math.max(hiddenName.implicitHeight, hiddenShow.implicitHeight)
-
-                Text {
-                  id: hiddenName
-                  textFormat: Text.PlainText
-                  text: modelData.providerName
-                  color: root.dim
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.bodySmall
-                  elide: Text.ElideRight
-                  anchors.left: parent.left
-                  anchors.right: hiddenShow.left
-                  anchors.rightMargin: Style.spacing.sm
-                  anchors.verticalCenter: parent.verticalCenter
-                }
-
-                Button {
-                  id: hiddenShow
-                  text: "Show"
-                  bordered: true
-                  foreground: root.foreground
-                  fontFamily: root.fontFamily
-                  fontSize: Style.font.bodySmall
-                  verticalPadding: Style.spacing.controlPaddingY
-                  anchors.right: parent.right
-                  anchors.verticalCenter: parent.verticalCenter
-                  onClicked: usage.setProviderEnabled(modelData.providerId, true)
-                  onHovered: function(isHovered) { if (isHovered) root.cursorActive = true }
-                }
-              }
-            }
-
-            Button {
-              visible: root.hiddenProviders.length > 1
-              text: "Show all"
-              bordered: true
-              foreground: root.foreground
-              fontFamily: root.fontFamily
-              fontSize: Style.font.bodySmall
-              verticalPadding: Style.spacing.controlPaddingY
-              onClicked: {
-                for (var i = 0; i < root.hiddenProviders.length; i++)
-                  usage.setProviderEnabled(root.hiddenProviders[i].providerId, true)
-              }
+            // Single insertion mark above every chip: per-delegate marks sat
+            // under the dragged chip and missed the outer edges.
+            Rectangle {
+              visible: providerSwitch.dragging
+              width: Math.max(2, Style.space(2))
+              height: providerSwitch.height
+              x: providerSwitch.dragTo * providerSwitch.pitch - providerSwitch.spacing / 2 - width / 2
+              y: 0
+              z: 30
+              radius: width / 2
+              color: root.foreground
             }
           }
 
@@ -974,28 +1004,6 @@ Panel {
                 share: modelData.total / Math.max(1, root.models[0].total)
               }
             }
-          }
-
-          // ---------- Default agent ----------
-          // The agent `omarchy agent` launches. Opens Omarchy's own picker,
-          // so this panel never reimplements the agent list.
-          Button {
-            width: parent.width
-            text: usage.defaultAgentName() !== ""
-              ? ("Default agent: " + usage.defaultAgentName())
-              : "Choose default agent"
-            leftAlign: true
-            bordered: true
-            foreground: root.foreground
-            fontFamily: root.fontFamily
-            fontSize: Style.font.bodySmall
-            verticalPadding: Style.spacing.controlPaddingY
-            tooltipText: "Change the agent Omarchy launches"
-            onClicked: {
-              if (root.bar) root.bar.run("omarchy-agent --pick")
-              root.close()
-            }
-            onHovered: function(isHovered) { if (isHovered) root.cursorActive = true }
           }
 
           Text {

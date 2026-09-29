@@ -157,12 +157,31 @@ Item {
   property string defaultAgentId: ""
 
   FileView {
+    id: defaultAgentFile
     path: root.home + "/.config/omarchy/defaults/agent"
     watchChanges: true
+    atomicWrites: true
     printErrors: false
     onFileChanged: reload()
     onLoaded: root.defaultAgentId = String(text() || "").trim().split("\n")[0].trim()
     onLoadFailed: root.defaultAgentId = ""
+  }
+
+  // Omarchy ids a provider tab can become. Kimi and Fireworks have no
+  // omarchy agent, so double-clicking them is a no-op by design.
+  function omarchyAgentFor(providerId) {
+    var id = String(providerId || "")
+    if (id === "claude" || id === "codex" || id === "opencode") return id
+    return ""
+  }
+
+  // Writes the file directly instead of running `omarchy default agent`:
+  // that command always launches the agent afterwards. The watcher above
+  // picks the change back up, so marker and notice follow on their own.
+  function setDefaultAgent(providerId) {
+    var agent = omarchyAgentFor(providerId)
+    if (agent === "") return
+    defaultAgentFile.setText(agent + "\n")
   }
 
   function defaultAgentName() {
