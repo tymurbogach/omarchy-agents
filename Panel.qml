@@ -512,7 +512,7 @@ Panel {
             Button {
               id: hiddenButton
               visible: root.hiddenProviders.length > 0
-              text: "+" + (root.hiddenProviders.length > 1 ? root.hiddenProviders.length : "")
+              text: "+" + root.hiddenProviders.length
               bordered: true
               foreground: root.foreground
               fontFamily: root.fontFamily
@@ -658,45 +658,6 @@ Panel {
                   anchors.horizontalCenter: parent.horizontalCenter
                   anchors.bottom: parent.bottom
                   anchors.bottomMargin: Style.space(3)
-                }
-
-                // Visible hide affordance on the selected or hovered chip.
-                // A fixed box inside the chip: expanding past the edges
-                // reached the Flickable scrollbar on the last chip.
-                Item {
-                  id: chipClose
-                  visible: root.providers.length > 1
-                    && (index === root.providerIndex || chipButton.hot)
-                    && !providerSwitch.dragging
-                  width: Style.space(22)
-                  height: Style.space(22)
-                  anchors.top: parent.top
-                  anchors.right: parent.right
-                  z: 20
-
-                  Text {
-                    textFormat: Text.PlainText
-                    text: "×"
-                    color: closeArea.containsMouse ? root.foreground : root.dim
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.bodySmall
-                    anchors.centerIn: parent
-                  }
-
-                  MouseArea {
-                    id: closeArea
-                    anchors.fill: parent
-                    hoverEnabled: true
-                    cursorShape: Qt.PointingHandCursor
-                    acceptedButtons: Qt.LeftButton
-                    onClicked: usage.setProviderEnabled(modelData.providerId, false)
-                  }
-
-                  PanelToolTip {
-                    visible: closeArea.containsMouse
-                    text: "Hide " + modelData.providerName
-                    fontFamily: root.fontFamily
-                  }
                 }
 
                 MouseArea {

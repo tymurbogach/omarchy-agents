@@ -188,12 +188,11 @@ only adds the meter and the spent-of-funded line under the real figure.
   `x` hides it, `j`/`k` scroll, `r` or Enter refresh,
   Tab moves to the neighboring bar panel, Esc closes.
 - Chips: drag sideways to reorder, right-click for move/hide.
-  The selected or hovered chip shows a × that hides it directly.
   Double-click a Claude, Codex, or OpenCode tab to make it the default
   agent Omarchy launches (Kimi and Fireworks have no Omarchy agent).
   The default agent's chip wears a dot underneath, and a notice above
   the tabs names it.
-- The `+` at the top right restores hidden subscriptions from a dropdown;
+- The `+N` at the top right lists hidden subscriptions to restore;
   hiding also stops their scans. The switch row needs two visible agents,
   so the last one cannot hide itself out of the bar.
 - IPC: `omarchy-shell omarchy.agents <open|close|toggle|refresh|next>`.
