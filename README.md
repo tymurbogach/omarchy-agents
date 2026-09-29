@@ -187,7 +187,7 @@ only adds the meter and the spent-of-funded line under the real figure.
 - Panel: `h`/`l` switch subscription, `Shift+H`/`Shift+L` move it,
   `x` hides it, `j`/`k` scroll, `r` or Enter refresh,
   Tab moves to the neighboring bar panel, Esc closes.
-- Chips: drag sideways to reorder, right-click for an inline move/hide row.
+- Chips: drag sideways to reorder, right-click hides.
   Double-click a Claude, Codex, or OpenCode tab to make it the default
   agent Omarchy launches (Kimi and Fireworks have no Omarchy agent).
   The default agent's chip wears a dot underneath, and a notice above

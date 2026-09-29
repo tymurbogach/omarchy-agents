@@ -64,24 +64,7 @@ Panel {
     if (provider) usage.setProviderEnabled(provider.providerId, false)
   }
 
-  property var chipMenuProvider: null
   property bool hiddenExpanded: false
-
-  function providerById(id) {
-    for (var i = 0; i < providers.length; i++)
-      if (providers[i].providerId === String(id)) return providers[i]
-    return null
-  }
-
-  function openChipMenu(data) {
-    // Toggle: right-clicking the same chip closes its action row.
-    if (chipMenuProvider && data && chipMenuProvider.providerId === data.providerId) chipMenuProvider = null
-    else chipMenuProvider = data
-  }
-
-  function closeChipMenu() {
-    chipMenuProvider = null
-  }
 
   function refreshNow() {
     usage.refreshAll(true)
@@ -449,7 +432,7 @@ Panel {
                 fontFamily: root.fontFamily
                 fontSize: Style.font.bodySmall
                 verticalPadding: Style.spacing.controlPaddingY
-                tooltipText: "Show hidden subscriptions"
+                tooltipText: "Hidden subscriptions"
                 onClicked: root.hiddenExpanded = !root.hiddenExpanded
                 onHovered: function(isHovered) { if (isHovered) root.cursorActive = true }
               }
@@ -516,9 +499,9 @@ Panel {
             id: tabsNotice
             visible: root.providers.length > 0
             textFormat: Text.PlainText
-            text: usage.defaultAgentName() !== ""
-              ? ("● " + usage.defaultAgentName() + " is the default — double-click a tab to change it")
-              : "No default agent — double-click a tab (Claude, Codex, OpenCode)"
+              text: usage.defaultAgentName() !== ""
+                ? ("● " + usage.defaultAgentName() + " is the default — double-click changes it, right-click hides")
+                : "No default agent — double-click sets it (Claude, Codex, OpenCode), right-click hides"
             color: root.dim
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption
@@ -628,8 +611,9 @@ Panel {
                   fontSize: Style.font.bodySmall
                   verticalPadding: Style.spacing.controlPaddingY
                   // Left presses never reach this Button; dragArea below
-                  // selects on tap. Right presses fall through to the menu.
-                  onRightClicked: root.openChipMenu(modelData)
+                  // selects on tap. Right press hides the provider: restore
+                  // it from the plus list above the tabs.
+                  onRightClicked: usage.setProviderEnabled(modelData.providerId, false)
                   onHovered: function(isHovered) { if (isHovered) root.cursorActive = true }
                 }
 
@@ -702,60 +686,6 @@ Panel {
               z: 30
               radius: width / 2
               color: root.foreground
-            }
-          }
-
-          // ---------- Chip actions ----------
-          // Inline row, not a popup: the bar grants a single popout, so a
-          // PopupCard here would make it close this whole panel.
-          Row {
-            id: chipActions
-            visible: root.chipMenuProvider !== null
-              && root.providerById(root.chipMenuProvider.providerId) !== null
-            width: parent.width
-            spacing: Style.spacing.sm
-
-            readonly property real actionWidth: visible && root.chipMenuProvider
-              ? (width - spacing * 2) / 3
-              : 0
-
-            Button {
-              width: chipActions.actionWidth
-              text: "← Move"
-              foreground: root.foreground
-              fontFamily: root.fontFamily
-              fontSize: Style.font.bodySmall
-              verticalPadding: Style.spacing.controlPaddingY
-              onClicked: {
-                if (root.chipMenuProvider) usage.moveProviderInOrder(root.chipMenuProvider.providerId, -1)
-                root.closeChipMenu()
-              }
-            }
-
-            Button {
-              width: chipActions.actionWidth
-              text: "Move →"
-              foreground: root.foreground
-              fontFamily: root.fontFamily
-              fontSize: Style.font.bodySmall
-              verticalPadding: Style.spacing.controlPaddingY
-              onClicked: {
-                if (root.chipMenuProvider) usage.moveProviderInOrder(root.chipMenuProvider.providerId, 1)
-                root.closeChipMenu()
-              }
-            }
-
-            Button {
-              width: chipActions.actionWidth
-              text: root.chipMenuProvider ? ("Hide " + root.chipMenuProvider.providerName) : "Hide"
-              foreground: root.foreground
-              fontFamily: root.fontFamily
-              fontSize: Style.font.bodySmall
-              verticalPadding: Style.spacing.controlPaddingY
-              onClicked: {
-                if (root.chipMenuProvider) usage.setProviderEnabled(root.chipMenuProvider.providerId, false)
-                root.closeChipMenu()
-              }
             }
           }
 
