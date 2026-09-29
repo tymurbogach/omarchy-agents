@@ -44,15 +44,24 @@ written by `omarchy-agent-usage-update`. That command runs one
 on its refresh timer and whenever you ask for a refresh, and picks up any
 record that lands in the directory regardless of who wrote it.
 
-This plugin also runs its bundled collectors from `collectors/`. A new bundled
-collector needs no QML change: its filename is its provider ID and it writes
-the same JSON contract.
+This plugin also runs its bundled collectors from `collectors/` (currently
+`kimi.py` and `opencode.py`). A new bundled collector needs no QML change:
+its filename is its provider ID and it writes the same JSON contract.
 
 Adding an agent therefore never touches this plugin: ship a collector that
-prints the record contract (see the `claude` and `codex` collectors in
-`bin/`), and the panel gains a tab. An `assets/<id>.svg` mark is optional —
-with an `assets/<id>-light.svg` twin if the mark needs a dark variant for
-light surfaces — and the bar glyph stands in when there is none.
+writes the record contract (see `collectors/kimi.py` for the reference
+implementation), and the panel gains a tab. An `assets/<id>.svg` mark is
+optional — with an `assets/<id>-light.svg` twin if the mark needs a dark
+variant for light surfaces — and the bar glyph stands in when there is none.
+Marks that read well on both themes ship a single file: `claude.svg` and
+`fireworks.svg` (brand orange) have no `-light` twin by design; `codex`,
+`kimi` and `opencode` ship both variants.
+
+Collectors come from two places. `claude`, `codex` and `fireworks` are
+external: `omarchy-agent-usage-update` runs one `omarchy-agent-usage-<agent>`
+collector per agent outside this repo. `kimi` and `opencode` are bundled in
+`collectors/` and maintained here. The table below covers both; only the
+bundled rows are auditable in this repository.
 
 | Collector | Limits | Local stats |
 |---|---|---|
@@ -136,13 +145,16 @@ new collector list. Do not modify `/usr/share/omarchy/`.
 
 ## Remove
 
-Before removal, run this command from the installed plugin directory:
+Before removal, purge the bundled collectors from the installed plugin
+directory (external `claude`/`codex`/`fireworks` state is owned by their own
+CLIs and stays untouched):
 
 ```bash
+python3 collectors/kimi.py --purge --yes
 python3 collectors/opencode.py --purge --yes
 ```
 
-The command removes only the OpenCode cache and the OpenCode usage record.
+Each command removes only its own cache and usage record.
 Then disable and remove `cyberdyne.agents` with the Omarchy plugin commands.
 
 Claude limits need a signed-in CLI; without credentials the panel says so and
@@ -197,22 +209,28 @@ only adds the meter and the spent-of-funded line under the real figure.
 - The `+N` next to the title lists hidden subscriptions to restore;
   hiding also stops their scans. The switch row needs two visible agents,
   so the last one cannot hide itself out of the bar.
-- IPC: `omarchy-shell omarchy.agents <open|close|toggle|refresh|next>`.
+- IPC: `omarchy-shell omarchy.agents <open|close|show|hide|toggle|refresh|next>`.
+  `refresh` and `next` answer `"ok"` synchronously while the update itself
+  runs async; `show`/`hide` are aliases of `open`/`close`.
 
 ## Settings
 
 Settings live in the widget's entry in `~/.config/omarchy/shell.json`. The
 top-level keys can be set with
-`omarchy bar set omarchy.agents <key> <value>`:
+`omarchy bar set omarchy.agents <key> <value>`. `providers` and
+`providerOrder` are nested objects and have no field in the settings UI
+schema, so they are JSON-only (see below); the panel itself rewrites them
+on drag, `Shift+H`/`Shift+L`, hide and restore.
 
 | Key | Default | What it does |
 |---|---|---|
-| `providerOrder` | `{}` | Subscription tab order, as `{id: position}`; new agents append alphabetically. The panel rewrites it when you drag, use `Shift+H`/`Shift+L`, or the chip menu. (An object, not an array: the shell IPC layer flattens array arguments.) |
-| `refreshIntervalSec` | `900` | How often the usage records regenerate |
-| `syncMode` | `"Off"` | `"On"` writes this machine's snapshot and merges the others |
-| `syncDir` | `""` | A folder synced by Syncthing, Dropbox, rsync, … |
-| `syncFileName` | `<hostname>.json` | This machine's snapshot file |
-| `syncDeviceId` | hostname | Stable device name inside the snapshot |
+| `providerOrder` | `{}` | Subscription tab order, as `{id: position}`; new agents append alphabetically. The panel rewrites it when you drag, use `Shift+H`/`Shift+L`, or the chip menu. (An object, not an array: the shell IPC layer flattens array arguments.) JSON-only, no settings UI field. |
+| `providers` | all enabled | Per-agent `{id: {enabled}}` map. JSON-only, no settings UI field; unknown fields per agent are preserved. |
+| `refreshIntervalSec` | `900` | How often the usage records regenerate. Clamped to 30–3600; garbage falls back to 900 |
+| `syncMode` | `"Off"` | `"On"` writes this machine's snapshot and merges the others. Also accepts `true`/`yes`/`1`/`enabled` (legacy `syncEnabled` key still read) |
+| `syncDir` | `""` | A folder synced by Syncthing, Dropbox, rsync, … `~/` and `$HOME/` expand, relative paths resolve under `$HOME` |
+| `syncFileName` | `<hostname>.json` | This machine's snapshot file (sanitized, max 100 chars) |
+| `syncDeviceId` | hostname | Stable device name inside the snapshot (sanitized, max 80 chars) |
 
 Numbers need `--json`, or they land in `shell.json` as strings:
 
@@ -241,11 +259,15 @@ the records regenerate.
 
 With `syncMode` on, every `*.json` snapshot in `syncDir` is merged, so today,
 the last 7 days, and the all-time totals cover every machine you code on —
-active days are unioned by date rather than summed. Rate limits stay
-per-account and are never merged. A record may declare `"scope": "account"`
-when its stats are account-global rather than machine-local (Fireworks'
-billing API); those merge by taking the widest value instead of summing, so
-the same account synced from two machines is not counted twice.
+active days are unioned by date rather than summed. Snapshots carry
+`updatedAt`/`updatedAtMs`: files older than 48h no longer move today's
+counters, and duplicate `deviceId` files (renamed device, copied file) merge
+last-wins instead of double counting. Rate limits stay per-account and are
+never merged. A record may declare `"scope": "account"` when its stats are
+account-global rather than machine-local (Fireworks' billing API); those
+merge by taking the widest fresh value instead of summing, so the same
+account synced from two machines is not counted twice, and a stale pre-reset
+value cannot outlive a reset.
 
 One caveat on "all-time": the Codex collector only reads native session files
 touched in the last 30 days, and Fireworks requests the last 30 days from its

@@ -3,4 +3,5 @@ __pycache__/
 .pytest_cache/
 
 # Runtime state belongs under the user's XDG directories.
-*.json.tmp
+# Collectors use mkstemp(prefix="<record>.", suffix=".tmp"), e.g. kimi.json.Ab12.tmp.
+*.tmp
