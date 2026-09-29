@@ -65,6 +65,7 @@ Panel {
   }
 
   property bool hiddenExpanded: false
+  property bool hiddenPopupOpen: false
 
   function refreshNow() {
     usage.refreshAll(true)
@@ -374,6 +375,9 @@ Panel {
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
+      // While the hidden selector's popup owns keys, suspend this
+      // dispatcher's own shortcuts (same contract as the kit Dropdown).
+      blocked: root.hiddenPopupOpen
 
       onMoveRequested: function(dx, dy) {
         if (dx !== 0) {
@@ -421,20 +425,94 @@ Panel {
             fontFamily: root.fontFamily
             // Null when nothing hides so the loader collapses and the
             // labels take the full width.
-            trailingControl: root.hiddenProviders.length > 0 ? hiddenPlusComponent : null
+            trailingControl: root.hiddenProviders.length > 0 ? hiddenSelectComponent : null
 
+            // Compact selector for hidden subscriptions. A Controls.Popup,
+            // not a PopupCard: popups overlay this same window, while a
+            // PopupCard is a separate window that would revoke the bar's
+            // single popout and close this whole panel.
             Component {
-              id: hiddenPlusComponent
-              Button {
-                text: "+" + root.hiddenProviders.length
-                bordered: true
-                foreground: root.foreground
-                fontFamily: root.fontFamily
-                fontSize: Style.font.bodySmall
-                verticalPadding: Style.spacing.controlPaddingY
-                tooltipText: "Hidden subscriptions"
-                onClicked: root.hiddenExpanded = !root.hiddenExpanded
-                onHovered: function(isHovered) { if (isHovered) root.cursorActive = true }
+              id: hiddenSelectComponent
+              Item {
+                implicitWidth: selectTrigger.implicitWidth
+                implicitHeight: selectTrigger.implicitHeight
+
+                Button {
+                  id: selectTrigger
+                  text: "+" + root.hiddenProviders.length
+                  bordered: true
+                  foreground: root.foreground
+                  fontFamily: root.fontFamily
+                  fontSize: Style.font.bodySmall
+                  verticalPadding: Style.spacing.controlPaddingY
+                  tooltipText: "Hidden subscriptions"
+                  onClicked: selectPopup.opened ? selectPopup.close() : selectPopup.open()
+                  onHovered: function(isHovered) { if (isHovered) root.cursorActive = true }
+                }
+
+                Popup {
+                  id: selectPopup
+                  x: selectTrigger.width - width
+                  y: selectTrigger.height + Style.spacing.xxs
+                  width: Math.max(selectTrigger.width, Style.space(180))
+                  padding: Style.spacing.hairline
+                  leftPadding: Border.left(selectPopupBorder) + Style.spacing.hairline
+                  rightPadding: Border.right(selectPopupBorder) + Style.spacing.hairline
+                  topPadding: Border.top(selectPopupBorder) + Style.spacing.hairline
+                  bottomPadding: Border.bottom(selectPopupBorder) + Style.spacing.hairline
+                  focus: true
+                  closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+                  readonly property var selectPopupBorder: Border.localOrSurfaceSpec("popups", "border",
+                    Color.popups.border, Color.popups.border, Style.normalBorderWidth)
+
+                  onOpened: root.hiddenPopupOpen = true
+                  onClosed: root.hiddenPopupOpen = false
+
+                  background: BorderSurface {
+                    color: Color.popups.background
+                    borderSpec: selectPopup.selectPopupBorder
+                    radius: Style.cornerRadius
+                  }
+
+                  contentItem: Column {
+                    spacing: Style.spacing.sm
+
+                    Repeater {
+                      model: root.hiddenProviders
+
+                      Button {
+                        required property var modelData
+                        width: parent.width
+                        text: modelData.providerName
+                        leftAlign: true
+                        foreground: Color.popups.text
+                        fontFamily: root.fontFamily
+                        fontSize: Style.font.bodySmall
+                        tooltipText: "Show " + modelData.providerName
+                        onClicked: {
+                          selectPopup.close()
+                          usage.setProviderEnabled(modelData.providerId, true)
+                        }
+                        onHovered: function(isHovered) { if (isHovered) root.cursorActive = true }
+                      }
+                    }
+
+                    Button {
+                      visible: root.hiddenProviders.length > 1
+                      width: parent.width
+                      text: "Show all"
+                      leftAlign: true
+                      foreground: Color.popups.text
+                      fontFamily: root.fontFamily
+                      fontSize: Style.font.bodySmall
+                      onClicked: {
+                        selectPopup.close()
+                        for (var i = 0; i < root.hiddenProviders.length; i++)
+                          usage.setProviderEnabled(root.hiddenProviders[i].providerId, true)
+                      }
+                    }
+                  }
+                }
               }
             }
 
@@ -507,46 +585,6 @@ Panel {
             font.pixelSize: Style.font.caption
             elide: Text.ElideRight
             width: parent.width
-          }
-
-          // ---------- Hidden list ----------
-          // Inline, not a popup: the bar grants a single popout, so opening
-          // a PopupCard here would make it close this whole panel.
-          Column {
-            id: hiddenList
-            visible: root.hiddenExpanded && root.hiddenProviders.length > 0
-            width: parent.width
-            spacing: Style.spacing.sm
-
-            Repeater {
-              model: root.hiddenProviders
-
-              Button {
-                required property var modelData
-                width: parent.width
-                text: modelData.providerName
-                leftAlign: true
-                foreground: root.foreground
-                fontFamily: root.fontFamily
-                fontSize: Style.font.bodySmall
-                onClicked: usage.setProviderEnabled(modelData.providerId, true)
-                onHovered: function(isHovered) { if (isHovered) root.cursorActive = true }
-              }
-            }
-
-            Button {
-              visible: root.hiddenProviders.length > 1
-              width: parent.width
-              text: "Show all"
-              leftAlign: true
-              foreground: root.foreground
-              fontFamily: root.fontFamily
-              fontSize: Style.font.bodySmall
-              onClicked: {
-                for (var i = 0; i < root.hiddenProviders.length; i++)
-                  usage.setProviderEnabled(root.hiddenProviders[i].providerId, true)
-              }
-            }
           }
 
           // ---------- Provider switch ----------
