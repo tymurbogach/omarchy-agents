@@ -54,6 +54,7 @@ Panel {
     if (providers.length === 0) return
     var wrapped = ((index % providers.length) + providers.length) % providers.length
     selectedProviderId = providers[wrapped].providerId
+    defaultHint = ""
   }
 
   function moveSelectedProvider(direction) {
@@ -66,23 +67,18 @@ Panel {
 
   property bool hiddenExpanded: false
   property bool hiddenPopupOpen: false
-  // Transient answer to a double-click that cannot become the default
-  // (Kimi and Fireworks have no Omarchy agent). Clears itself.
+  // Answer to a double-click that cannot become the default (Kimi and
+  // Fireworks have no Omarchy agent; writing them would break `omarchy
+  // agent` with "Unsupported default agent"). Stays until the next tap.
   property string defaultHint: ""
-
-  Timer {
-    id: defaultHintTimer
-    interval: 3000
-    onTriggered: root.defaultHint = ""
-  }
 
   function doubleClickChip(data) {
     if (!data) return
     if (usage.omarchyAgentFor(data.providerId) === "") {
       root.defaultHint = data.providerName + " has no Omarchy agent"
-      defaultHintTimer.restart()
       return
     }
+    root.defaultHint = ""
     usage.setDefaultAgent(data.providerId)
   }
 
@@ -335,6 +331,7 @@ Panel {
   onProviderIndexChanged: if (panelFlick) panelFlick.contentY = 0
   onOpenedChanged: if (opened) {
     cursorActive = false
+    defaultHint = ""
     nowMs = Date.now()
     if (panelFlick) panelFlick.contentY = 0
     usage.refreshLimits()
