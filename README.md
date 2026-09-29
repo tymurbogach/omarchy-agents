@@ -189,7 +189,8 @@ only adds the meter and the spent-of-funded line under the real figure.
   Tab moves to the neighboring bar panel, Esc closes.
 - Chips: drag sideways to reorder, right-click hides.
   Double-click a Claude, Codex, or OpenCode tab to make it the default
-  agent Omarchy launches (Kimi and Fireworks have no Omarchy agent).
+  agent Omarchy launches. Double-clicking Kimi or Fireworks answers in
+  the notice instead: they have no Omarchy agent.
   The default agent's chip wears a dot underneath, and a notice above
   the tabs names it.
 - The `+N` next to the title lists hidden subscriptions to restore;

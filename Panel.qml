@@ -66,6 +66,25 @@ Panel {
 
   property bool hiddenExpanded: false
   property bool hiddenPopupOpen: false
+  // Transient answer to a double-click that cannot become the default
+  // (Kimi and Fireworks have no Omarchy agent). Clears itself.
+  property string defaultHint: ""
+
+  Timer {
+    id: defaultHintTimer
+    interval: 3000
+    onTriggered: root.defaultHint = ""
+  }
+
+  function doubleClickChip(data) {
+    if (!data) return
+    if (usage.omarchyAgentFor(data.providerId) === "") {
+      root.defaultHint = data.providerName + " has no Omarchy agent"
+      defaultHintTimer.restart()
+      return
+    }
+    usage.setDefaultAgent(data.providerId)
+  }
 
   function refreshNow() {
     usage.refreshAll(true)
@@ -577,10 +596,12 @@ Panel {
             id: tabsNotice
             visible: root.providers.length > 0
             textFormat: Text.PlainText
-              text: usage.defaultAgentName() !== ""
-                ? ("● " + usage.defaultAgentName() + " is the default — double-click changes it, right-click hides")
-                : "No default agent — double-click sets it (Claude, Codex, OpenCode), right-click hides"
-            color: root.dim
+              text: root.defaultHint !== ""
+                ? ("● " + root.defaultHint)
+                : usage.defaultAgentName() !== ""
+                ? ("● " + usage.defaultAgentName() + " is the default — double-click a Claude, Codex or OpenCode tab to change it, right-click hides")
+                : "No default agent — double-click a Claude, Codex or OpenCode tab, right-click hides"
+              color: root.defaultHint !== "" ? root.foreground : root.dim
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption
             elide: Text.ElideRight
@@ -672,7 +693,7 @@ Panel {
                   id: dragArea
                   anchors.fill: parent
                   acceptedButtons: Qt.LeftButton
-                  onDoubleClicked: usage.setDefaultAgent(modelData.providerId)
+                  onDoubleClicked: root.doubleClickChip(modelData)
                   property real pressX: 0
                   property real pressRowX: 0
                   property bool moved: false
