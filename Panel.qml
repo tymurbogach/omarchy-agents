@@ -65,15 +65,22 @@ Panel {
   }
 
   property var chipMenuProvider: null
+  property bool hiddenExpanded: false
 
-  function openChipMenu(slot, data) {
-    chipMenuProvider = data
-    chipMenu.anchorItem = slot
-    chipMenu.open = true
+  function providerById(id) {
+    for (var i = 0; i < providers.length; i++)
+      if (providers[i].providerId === String(id)) return providers[i]
+    return null
+  }
+
+  function openChipMenu(data) {
+    // Toggle: right-clicking the same chip closes its action row.
+    if (chipMenuProvider && data && chipMenuProvider.providerId === data.providerId) chipMenuProvider = null
+    else chipMenuProvider = data
   }
 
   function closeChipMenu() {
-    chipMenu.open = false
+    chipMenuProvider = null
   }
 
   function refreshNow() {
@@ -442,8 +449,8 @@ Panel {
                 fontFamily: root.fontFamily
                 fontSize: Style.font.bodySmall
                 verticalPadding: Style.spacing.controlPaddingY
-                tooltipText: "Show a hidden subscription"
-                onClicked: hiddenMenu.open = true
+                tooltipText: "Show hidden subscriptions"
+                onClicked: root.hiddenExpanded = !root.hiddenExpanded
                 onHovered: function(isHovered) { if (isHovered) root.cursorActive = true }
               }
             }
@@ -519,53 +526,42 @@ Panel {
             width: parent.width
           }
 
-          // ---------- Hidden menu ----------
-          // Compact replacement for the old HIDDEN section: one dropdown
-          // listing hidden subscriptions to restore.
-          PopupCard {
-            id: hiddenMenu
-            anchorItem: hero
-            bar: root.bar
-            owner: null
-            contentWidth: hiddenMenu.fittedContentWidth(Style.space(220))
-            contentHeight: hiddenMenu.fittedContentHeight(hiddenMenuColumn.implicitHeight)
+          // ---------- Hidden list ----------
+          // Inline, not a popup: the bar grants a single popout, so opening
+          // a PopupCard here would make it close this whole panel.
+          Column {
+            id: hiddenList
+            visible: root.hiddenExpanded && root.hiddenProviders.length > 0
+            width: parent.width
+            spacing: Style.spacing.sm
 
-            Column {
-              id: hiddenMenuColumn
-              width: parent.width
-              spacing: Style.spacing.sm
-
-              Repeater {
-                model: root.hiddenProviders
-
-                Button {
-                  required property var modelData
-                  width: parent.width
-                  text: modelData.providerName
-                  leftAlign: true
-                  foreground: root.foreground
-                  fontFamily: root.fontFamily
-                  fontSize: Style.font.bodySmall
-                  onClicked: {
-                    usage.setProviderEnabled(modelData.providerId, true)
-                    hiddenMenu.open = false
-                  }
-                }
-              }
+            Repeater {
+              model: root.hiddenProviders
 
               Button {
-                visible: root.hiddenProviders.length > 1
+                required property var modelData
                 width: parent.width
-                text: "Show all"
+                text: modelData.providerName
                 leftAlign: true
                 foreground: root.foreground
                 fontFamily: root.fontFamily
                 fontSize: Style.font.bodySmall
-                onClicked: {
-                  for (var i = 0; i < root.hiddenProviders.length; i++)
-                    usage.setProviderEnabled(root.hiddenProviders[i].providerId, true)
-                  hiddenMenu.open = false
-                }
+                onClicked: usage.setProviderEnabled(modelData.providerId, true)
+                onHovered: function(isHovered) { if (isHovered) root.cursorActive = true }
+              }
+            }
+
+            Button {
+              visible: root.hiddenProviders.length > 1
+              width: parent.width
+              text: "Show all"
+              leftAlign: true
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              fontSize: Style.font.bodySmall
+              onClicked: {
+                for (var i = 0; i < root.hiddenProviders.length; i++)
+                  usage.setProviderEnabled(root.hiddenProviders[i].providerId, true)
               }
             }
           }
@@ -633,7 +629,7 @@ Panel {
                   verticalPadding: Style.spacing.controlPaddingY
                   // Left presses never reach this Button; dragArea below
                   // selects on tap. Right presses fall through to the menu.
-                  onRightClicked: root.openChipMenu(chipSlot, modelData)
+                  onRightClicked: root.openChipMenu(modelData)
                   onHovered: function(isHovered) { if (isHovered) root.cursorActive = true }
                 }
 
@@ -709,61 +705,56 @@ Panel {
             }
           }
 
-          // ---------- Chip menu ----------
-          // owner stays null: PopupCard.close() calls owner.close() when one
-          // exists, and root.close() would dismiss the whole panel.
-          PopupCard {
-            id: chipMenu
-            // anchorItem is required at creation; openChipMenu repoints it
-            // at the pressed chip before opening.
-            anchorItem: button
-            bar: root.bar
-            owner: null
-            contentWidth: chipMenu.fittedContentWidth(Style.space(220))
-            contentHeight: chipMenu.fittedContentHeight(chipMenuColumn.implicitHeight)
+          // ---------- Chip actions ----------
+          // Inline row, not a popup: the bar grants a single popout, so a
+          // PopupCard here would make it close this whole panel.
+          Row {
+            id: chipActions
+            visible: root.chipMenuProvider !== null
+              && root.providerById(root.chipMenuProvider.providerId) !== null
+            width: parent.width
+            spacing: Style.spacing.sm
 
-            Column {
-              id: chipMenuColumn
-              width: parent.width
-              spacing: Style.spacing.sm
+            readonly property real actionWidth: visible && root.chipMenuProvider
+              ? (width - spacing * 2) / 3
+              : 0
 
-              Button {
-                width: parent.width
-                text: "Move left"
-                leftAlign: true
-                foreground: root.foreground
-                fontFamily: root.fontFamily
-                fontSize: Style.font.bodySmall
-                onClicked: {
-                  if (root.chipMenuProvider) usage.moveProviderInOrder(root.chipMenuProvider.providerId, -1)
-                  root.closeChipMenu()
-                }
+            Button {
+              width: chipActions.actionWidth
+              text: "← Move"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              fontSize: Style.font.bodySmall
+              verticalPadding: Style.spacing.controlPaddingY
+              onClicked: {
+                if (root.chipMenuProvider) usage.moveProviderInOrder(root.chipMenuProvider.providerId, -1)
+                root.closeChipMenu()
               }
+            }
 
-              Button {
-                width: parent.width
-                text: "Move right"
-                leftAlign: true
-                foreground: root.foreground
-                fontFamily: root.fontFamily
-                fontSize: Style.font.bodySmall
-                onClicked: {
-                  if (root.chipMenuProvider) usage.moveProviderInOrder(root.chipMenuProvider.providerId, 1)
-                  root.closeChipMenu()
-                }
+            Button {
+              width: chipActions.actionWidth
+              text: "Move →"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              fontSize: Style.font.bodySmall
+              verticalPadding: Style.spacing.controlPaddingY
+              onClicked: {
+                if (root.chipMenuProvider) usage.moveProviderInOrder(root.chipMenuProvider.providerId, 1)
+                root.closeChipMenu()
               }
+            }
 
-              Button {
-                width: parent.width
-                text: root.chipMenuProvider ? ("Hide " + root.chipMenuProvider.providerName) : "Hide"
-                leftAlign: true
-                foreground: root.foreground
-                fontFamily: root.fontFamily
-                fontSize: Style.font.bodySmall
-                onClicked: {
-                  if (root.chipMenuProvider) usage.setProviderEnabled(root.chipMenuProvider.providerId, false)
-                  root.closeChipMenu()
-                }
+            Button {
+              width: chipActions.actionWidth
+              text: root.chipMenuProvider ? ("Hide " + root.chipMenuProvider.providerName) : "Hide"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              fontSize: Style.font.bodySmall
+              verticalPadding: Style.spacing.controlPaddingY
+              onClicked: {
+                if (root.chipMenuProvider) usage.setProviderEnabled(root.chipMenuProvider.providerId, false)
+                root.closeChipMenu()
               }
             }
           }
