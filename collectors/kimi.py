@@ -79,9 +79,12 @@ def opencode_database_path() -> Path:
 
 def number(value: Any) -> int:
     try:
-        return max(0, int(value or 0))
-    except (TypeError, ValueError):
+        result = int(value or 0)
+    except (TypeError, ValueError, OverflowError):
         return 0
+    if not math.isfinite(result):
+        return 0
+    return max(0, result)
 
 
 def empty_bucket() -> dict[str, int]:
@@ -136,19 +139,59 @@ def normalise_aggregate(value: Any) -> dict[str, Any]:
     aggregate["promptIds"] = sorted({str(item) for item in value.get("promptIds", []) if item})
     aggregate["sessionIds"] = sorted({str(item) for item in value.get("sessionIds", []) if item})
     aggregate["activeDates"] = sorted({str(item) for item in value.get("activeDates", []) if item})
-    aggregate["modelUsage"] = value.get("modelUsage") if isinstance(value.get("modelUsage"), dict) else {}
-    aggregate["days"] = value.get("days") if isinstance(value.get("days"), dict) else {}
+    aggregate["modelUsage"] = clean_model_usage(value.get("modelUsage"))
+    aggregate["days"] = clean_days(value.get("days"))
     return aggregate
+
+
+def clean_bucket(value: Any) -> dict[str, int]:
+    if not isinstance(value, dict):
+        return empty_bucket()
+    return {
+        "inputTokens": number(value.get("inputTokens")),
+        "outputTokens": number(value.get("outputTokens")),
+        "cacheReadInputTokens": number(value.get("cacheReadInputTokens")),
+        "cacheCreationInputTokens": number(value.get("cacheCreationInputTokens")),
+    }
+
+
+def clean_model_usage(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    cleaned: dict[str, Any] = {}
+    for key, bucket in value.items():
+        if key and isinstance(bucket, dict):
+            cleaned[str(key)] = clean_bucket(bucket)
+    return cleaned
+
+
+def clean_days(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    cleaned: dict[str, Any] = {}
+    for key, day in value.items():
+        if not key or not isinstance(day, dict):
+            continue
+        sessions = day.get("sessions")
+        models = day.get("models")
+        cleaned[str(key)] = {
+            "tokens": number(day.get("tokens")),
+            "prompts": number(day.get("prompts")),
+            "sessions": sorted({str(item) for item in sessions if item}) if isinstance(sessions, list) else [],
+            "models": {str(name): number(total) for name, total in models.items() if name} if isinstance(models, dict) else {},
+        }
+    return cleaned
 
 
 def read_cache(path: Path) -> dict[str, Any]:
     cached = read_json(path)
     if not cached or cached.get("version") != CACHE_VERSION:
-        return {"version": CACHE_VERSION, "aggregate": empty_aggregate(), "wires": {}, "database": {}, "limits": []}
+        return {"version": CACHE_VERSION, "aggregate": empty_aggregate(), "wires": {}, "database": {}, "limits": [], "tier": ""}
     cached["aggregate"] = normalise_aggregate(cached.get("aggregate"))
     cached["wires"] = cached.get("wires") if isinstance(cached.get("wires"), dict) else {}
     cached["database"] = cached.get("database") if isinstance(cached.get("database"), dict) else {}
     cached["limits"] = cached.get("limits") if isinstance(cached.get("limits"), list) else []
+    cached["tier"] = cached.get("tier") if isinstance(cached.get("tier"), str) else ""
     return cached
 
 
@@ -156,7 +199,10 @@ def local_day_from_ms(milliseconds: Any) -> str:
     timestamp = number(milliseconds)
     if timestamp <= 0:
         return dt.datetime.now().astimezone().date().isoformat()
-    return dt.datetime.fromtimestamp(timestamp / 1000).astimezone().date().isoformat()
+    try:
+        return dt.datetime.fromtimestamp(timestamp / 1000).astimezone().date().isoformat()
+    except (OverflowError, OSError, ValueError):
+        return dt.datetime.now().astimezone().date().isoformat()
 
 
 def short_model(model_id: str) -> str:
@@ -205,21 +251,30 @@ def session_id_for_wire(path: Path) -> str:
     return "kimi:" + path.parent.name
 
 
+def wire_identity(path: Path) -> dict[str, int] | None:
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    return {"device": stat.st_dev, "inode": stat.st_ino, "size": stat.st_size, "mtime": stat.st_mtime_ns}
+
+
 def scan_wire_file(path: Path, aggregate: dict[str, Any], offset: int) -> int:
     session_key = session_id_for_wire(path)
     position = offset
     try:
-        with open(path, "r", encoding="utf-8") as stream:
+        with open(path, "rb") as stream:
             if offset > 0:
                 stream.seek(offset)
-            # Byte-count manually: tell() is unreliable on a text stream
-            # advanced by next(), and readline keeps offsets exact.
             while True:
-                line = stream.readline()
-                if line == "":
+                raw = stream.readline()
+                if raw == b"":
                     break
-                position += len(line.encode("utf-8"))
-                line = line.strip()
+                position += len(raw)
+                try:
+                    line = raw.decode("utf-8").strip()
+                except UnicodeDecodeError:
+                    continue
                 if not line:
                     continue
                 try:
@@ -258,39 +313,63 @@ def scan_wires(root: Path, cached: dict[str, Any], force: bool) -> tuple[dict[st
     else:
         aggregate = normalise_aggregate(cached.get("aggregate"))
         wires = dict(known)
-        shrunk = False
+        replaced = False
         for path in current:
-            try:
-                size = Path(path).stat().st_size
-            except OSError:
+            identity = wire_identity(Path(path))
+            if identity is None:
                 continue
             previous = known.get(path)
-            if isinstance(previous, dict) and number(previous.get("size")) > size:
-                shrunk = True
+            if not isinstance(previous, dict):
+                continue
+            # Same inode and growing size is an append: keep the offset.
+            # Anything else (new inode, shrink, same-size rewrite) means the
+            # log was rotated or replaced and offsets are garbage.
+            if number(previous.get("inode")) != identity["inode"]:
+                replaced = True
                 break
-        if shrunk or set(current) != set(known):
+            if identity["size"] < number(previous.get("size")):
+                replaced = True
+                break
+            if (identity["size"] == number(previous.get("size"))
+                    and number(previous.get("mtime")) != identity["mtime"]):
+                replaced = True
+                break
+        if replaced or set(current) != set(known):
             # A rotated or removed log invalidates offsets: rebuild from scratch.
             aggregate = empty_aggregate()
             wires = {}
         else:
             rebuilt = False
     for path in current:
-        try:
-            size = Path(path).stat().st_size
-        except OSError:
+        identity = wire_identity(Path(path))
+        if identity is None:
             continue
         entry = wires.get(path)
         offset = 0
         if not rebuilt and isinstance(entry, dict):
-            offset = min(number(entry.get("offset")), size)
+            offset = min(number(entry.get("offset")), identity["size"])
         offset = scan_wire_file(Path(path), aggregate, offset)
-        wires[path] = {"offset": offset, "size": size}
+        wires[path] = {"offset": offset, "size": identity["size"],
+                       "inode": identity["inode"], "mtime": identity["mtime"]}
     return aggregate, wires, rebuilt
 
 
 def database_identity(path: Path) -> dict[str, int]:
     stat = path.stat()
-    return {"device": stat.st_dev, "inode": stat.st_ino, "size": stat.st_size}
+    return {"device": stat.st_dev, "inode": stat.st_ino, "size": stat.st_size, "mtime": stat.st_mtime_ns}
+
+
+def database_reusable(previous: Any, identity: dict[str, int]) -> bool:
+    """Same file (device+inode) that did not shrink stays incremental and
+    rowid-based: normal appends often fit in already-allocated pages without
+    growing the file, so size/mtime alone cannot judge. A replaced database
+    is caught downstream by max(rowid) < lastRowId, which restarts from zero.
+    """
+    if not isinstance(previous, dict):
+        return False
+    if previous.get("device") != identity["device"] or previous.get("inode") != identity["inode"]:
+        return False
+    return number(previous.get("size")) <= identity["size"]
 
 
 def scan_opencode_database(path: Path, aggregate: dict[str, Any], cached: dict[str, Any],
@@ -301,9 +380,7 @@ def scan_opencode_database(path: Path, aggregate: dict[str, Any], cached: dict[s
     except OSError:
         return aggregate, number((cached.get("database") or {}).get("lastRowId"))
     previous = cached.get("database") or {}
-    reuse = (not force and not rebuilt and previous.get("device") == identity["device"]
-             and previous.get("inode") == identity["inode"]
-             and number(previous.get("size")) <= identity["size"])
+    reuse = not force and not rebuilt and database_reusable(previous, identity)
     start_row_id = number(previous.get("lastRowId")) if reuse else 0
     last_row_id = start_row_id
     try:
@@ -320,28 +397,33 @@ def scan_opencode_database(path: Path, aggregate: dict[str, Any], cached: dict[s
                 "SELECT rowid, session_id, data FROM message WHERE rowid > ? ORDER BY rowid", (start_row_id,))
         except sqlite3.Error:
             return aggregate, last_row_id
-        for row_id, session_id, raw in rows:
-            last_row_id = number(row_id)
-            try:
-                entry = json.loads(raw)
-            except (TypeError, json.JSONDecodeError):
-                continue
-            if not isinstance(entry, dict) or entry.get("role") != "assistant":
-                continue
-            if str(entry.get("providerID") or "") not in OPENCODE_KIMI_PROVIDER_IDS:
-                continue
-            tokens = entry.get("tokens") if isinstance(entry.get("tokens"), dict) else {}
-            cache = tokens.get("cache") if isinstance(tokens.get("cache"), dict) else {}
-            # Opencode keeps thinking tokens out of output; both are generated.
-            add_tokens(
-                aggregate, "opencode:" + str(session_id),
-                short_model(str(entry.get("modelID") or "kimi")),
-                local_day_from_ms((entry.get("time") or {}).get("created")),
-                number(tokens.get("input")),
-                number(tokens.get("output")) + number(tokens.get("reasoning")),
-                number(cache.get("read")),
-                number(cache.get("write")),
-            )
+        try:
+            for row_id, session_id, raw in rows:
+                last_row_id = number(row_id)
+                try:
+                    entry = json.loads(raw)
+                except (TypeError, json.JSONDecodeError):
+                    continue
+                if not isinstance(entry, dict) or entry.get("role") != "assistant":
+                    continue
+                if str(entry.get("providerID") or "") not in OPENCODE_KIMI_PROVIDER_IDS:
+                    continue
+                tokens = entry.get("tokens") if isinstance(entry.get("tokens"), dict) else {}
+                cache = tokens.get("cache") if isinstance(tokens.get("cache"), dict) else {}
+                # Opencode keeps thinking tokens out of output; both are generated.
+                add_tokens(
+                    aggregate, "opencode:" + str(session_id),
+                    short_model(str(entry.get("modelID") or "kimi")),
+                    local_day_from_ms((entry.get("time") or {}).get("created")),
+                    number(tokens.get("input")),
+                    number(tokens.get("output")) + number(tokens.get("reasoning")),
+                    number(cache.get("read")),
+                    number(cache.get("write")),
+                )
+        except sqlite3.Error:
+            # BUSY/LOCKED mid-scan (checkpoint, concurrent vacuum): keep the
+            # rows consumed so far; the next run resumes after last_row_id.
+            pass
     finally:
         connection.close()
     return aggregate, last_row_id
@@ -396,15 +478,33 @@ def managed_provider() -> dict[str, str]:
     return provider
 
 
+def is_https_url(value: str) -> bool:
+    try:
+        parsed = urllib.parse.urlparse(value)
+    except (TypeError, ValueError):
+        return False
+    return parsed.scheme == "https" and bool(parsed.netloc)
+
+
 def configured_endpoints() -> tuple[list[str], list[str]]:
-    """Managed provider hosts first, compiled-in defaults after."""
+    """Managed provider hosts first, compiled-in defaults after.
+
+    A managed host that is not https is ignored: sending a Bearer token
+    over cleartext HTTP must never happen because of a config typo.
+    """
     provider = managed_provider()
     api_bases = list(API_BASES)
     oauth_hosts = list(OAUTH_HOSTS)
     if provider["base_url"] and provider["base_url"] not in api_bases:
-        api_bases.insert(0, provider["base_url"])
+        if is_https_url(provider["base_url"]):
+            api_bases.insert(0, provider["base_url"])
+        else:
+            print("kimi collector: ignoring non-https base_url from config.toml", file=sys.stderr)
     if provider["oauth_host"] and provider["oauth_host"] not in oauth_hosts:
-        oauth_hosts.insert(0, provider["oauth_host"])
+        if is_https_url(provider["oauth_host"]):
+            oauth_hosts.insert(0, provider["oauth_host"])
+        else:
+            print("kimi collector: ignoring non-https oauth_host from config.toml", file=sys.stderr)
     return api_bases, oauth_hosts
 
 
@@ -477,7 +577,9 @@ def post_refresh_token(refresh_token: str, oauth_hosts: list[str]) -> tuple[dict
 
     token_info uses the CLI wire names (snake_case). error is None on
     success, "auth" when the server rejected the grant, "network"
-    otherwise. Never raises, never logs secrets.
+    otherwise. Every host is tried: a 401 from the wrong host must not
+    hide the account living on the other one. Never raises, never logs
+    secrets.
     """
     payload = urllib.parse.urlencode({
         "grant_type": "refresh_token",
@@ -486,6 +588,8 @@ def post_refresh_token(refresh_token: str, oauth_hosts: list[str]) -> tuple[dict
     }).encode()
     token_info: dict[str, Any] | None = None
     error: str | None = "network"
+    auth_rejections = 0
+    network_failures = 0
     for host in oauth_hosts:
         request = urllib.request.Request(
             host + "/api/oauth/token",
@@ -496,14 +600,19 @@ def post_refresh_token(refresh_token: str, oauth_hosts: list[str]) -> tuple[dict
             with urllib.request.urlopen(request, timeout=8) as response:
                 data = json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as http_error:
-            if http_error.code in (401, 403):
-                return None, "auth"
+            if http_error.code in (401, 403) or is_invalid_grant(http_error):
+                auth_rejections += 1
+                error = "auth"
+                continue
+            network_failures += 1
             error = "network"
             continue
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError, ValueError):
+            network_failures += 1
             error = "network"
             continue
         if not isinstance(data, dict):
+            network_failures += 1
             error = "network"
             continue
         access = data.get("access_token")
@@ -513,9 +622,11 @@ def post_refresh_token(refresh_token: str, oauth_hosts: list[str]) -> tuple[dict
         except (TypeError, ValueError):
             lifetime = float("nan")
         if not isinstance(access, str) or not access or not isinstance(refresh, str) or not refresh:
+            network_failures += 1
             error = "network"
             continue
         if not math.isfinite(lifetime) or lifetime <= 0:
+            network_failures += 1
             error = "network"
             continue
         now = int(time.time())
@@ -529,15 +640,35 @@ def post_refresh_token(refresh_token: str, oauth_hosts: list[str]) -> tuple[dict
         }
         error = None
         break
+    if token_info is None and oauth_hosts:
+        # Mixed outcomes (one host rejects, another is unreachable) must not
+        # report auth: the account may live on the unreachable host.
+        if auth_rejections >= len(oauth_hosts):
+            error = "auth"
+        elif network_failures > 0:
+            error = "network"
     return token_info, error
+
+
+def is_invalid_grant(http_error: urllib.error.HTTPError) -> bool:
+    """OAuth2 revocations arrive as 400 invalid_grant, not 401."""
+    if http_error.code != 400:
+        return False
+    try:
+        body = http_error.read().decode("utf-8", errors="replace")
+    except (OSError, ValueError):
+        return False
+    return "invalid_grant" in body
 
 
 def save_credential(path: Path, token_info: dict[str, Any]) -> bool:
     """Atomically persist a refreshed credential (mode 0600, fsync).
 
     Only ever writes the CLI's own wire shape; never touches record/cache.
+    Unknown fields already in the file are preserved so a newer CLI that
+    stores extras (id_token, issued_at, ...) survives our rotation.
     """
-    payload = {
+    known = {
         "access_token": token_info.get("access_token", ""),
         "refresh_token": token_info.get("refresh_token", ""),
         "expires_at": number(token_info.get("expires_at")),
@@ -545,6 +676,13 @@ def save_credential(path: Path, token_info: dict[str, Any]) -> bool:
         "token_type": str(token_info.get("token_type") or "Bearer"),
         "expires_in": number(token_info.get("expires_in")),
     }
+    payload: dict[str, Any] = {}
+    existing = read_json(path)
+    if isinstance(existing, dict):
+        for key, value in existing.items():
+            if key not in known:
+                payload[key] = value
+    payload.update(known)
     try:
         path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         try:
@@ -613,7 +751,10 @@ def resolve_access_token() -> tuple[str, str | None]:
         # here); the CLI records that itself on its next run.
         if error == "auth":
             return "", "auth"
-        return (credential.get("access_token") if isinstance(credential.get("access_token"), str) else ""), "network"
+        # Network failure: report no token so callers keep cached windows and
+        # retry soon, instead of probing the API with an expiring token and
+        # misreporting the resulting 401 as an expired login.
+        return "", "network"
     # Compare-and-swap: re-read before writing; a peer rotation wins.
     current = read_json(path)
     if has_refresh_token(current) and current.get("refresh_token") != used_refresh:
@@ -775,7 +916,7 @@ def collect(force: bool, limits_only: bool) -> dict[str, Any]:
 
     stats = stats_from_aggregate(aggregate)
     api_bases = configured_endpoints()[0]
-    tier_label = "Kimi Code"
+    tier_label = cache.get("tier") or "Kimi Code"
     status = ""
     help_text = ""
     retry = False
@@ -798,6 +939,7 @@ def collect(force: bool, limits_only: bool) -> dict[str, Any]:
             profile, _ = fetch_json(base + "/me", token)
             if isinstance(profile, dict) and str(profile.get("user_level_name") or "").strip():
                 tier_label = str(profile["user_level_name"]).strip()
+                cache["tier"] = tier_label
             if candidate:
                 fresh_limits = candidate
                 break
@@ -811,12 +953,13 @@ def collect(force: bool, limits_only: bool) -> dict[str, Any]:
             retry = True
             if not limits and number(stats.get("totalPrompts")) <= 0:
                 help_text = "Run /login in Kimi Code to restore quota."
-        elif auth_failed:
-            # The token (or its refresh) was rejected: cached windows stay
-            # visible but the panel must say re-login is needed.
+        elif auth_failed and not network_failed:
+            # Every base rejected the token: cached windows stay visible but
+            # the panel must say re-login is needed. With mixed outcomes the
+            # account may live on the unreachable host, so retry quietly.
             status = "Kimi Code authentication expired."
             help_text = "Run /login in Kimi Code to restore quota."
-        elif network_failed:
+        elif network_failed or auth_failed:
             if limits:
                 retry = True
             else:
@@ -824,14 +967,21 @@ def collect(force: bool, limits_only: bool) -> dict[str, Any]:
                 help_text = "Check the network connection and refresh."
                 retry = True
     else:
-        # No usable credential: local stats stay, limits clear.
-        limits = []
+        # No usable credential: local stats stay.
         if token_error == "network":
-            status = "Kimi Code limits unavailable."
-            help_text = "Check the network connection and refresh."
-            retry = True
-        elif number(stats.get("totalPrompts")) <= 0:
-            help_text = "Run /login in Kimi Code to authenticate."
+            # Refresh failed on the wire: keep cached windows and retry soon
+            # instead of clearing them as if the login had expired.
+            if limits:
+                retry = True
+            else:
+                status = "Kimi Code limits unavailable."
+                help_text = "Check the network connection and refresh."
+                retry = True
+        else:
+            limits = []
+            cache["limits"] = limits
+            if number(stats.get("totalPrompts")) <= 0:
+                help_text = "Run /login in Kimi Code to authenticate."
     try:
         database = opencode_database_path()
         try:
@@ -840,7 +990,7 @@ def collect(force: bool, limits_only: bool) -> dict[str, Any]:
             identity = {}
         identity["lastRowId"] = last_row_id
         atomic_json(cache_file, {"version": CACHE_VERSION, "aggregate": aggregate, "wires": wires,
-                                 "database": identity, "limits": limits})
+                                 "database": identity, "limits": limits, "tier": tier_label})
     except OSError:
         pass
     return base_record(stats, limits, tier_label, status, help_text, retry)

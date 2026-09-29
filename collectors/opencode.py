@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import math
 import os
 from pathlib import Path
 import sqlite3
@@ -65,9 +66,12 @@ def record_path() -> Path:
 
 def number(value: Any) -> int:
     try:
-        return max(0, int(value or 0))
-    except (TypeError, ValueError):
+        result = int(value or 0)
+    except (TypeError, ValueError, OverflowError):
         return 0
+    if not math.isfinite(result):
+        return 0
+    return max(0, result)
 
 
 def empty_bucket() -> dict[str, int]:
@@ -120,9 +124,48 @@ def normalise_aggregate(value: Any) -> dict[str, Any]:
     aggregate["totalPrompts"] = number(value.get("totalPrompts"))
     aggregate["sessionIds"] = sorted({str(item) for item in value.get("sessionIds", []) if item})
     aggregate["activeDates"] = sorted({str(item) for item in value.get("activeDates", []) if item})
-    aggregate["modelUsage"] = value.get("modelUsage") if isinstance(value.get("modelUsage"), dict) else {}
-    aggregate["days"] = value.get("days") if isinstance(value.get("days"), dict) else {}
+    aggregate["modelUsage"] = clean_model_usage(value.get("modelUsage"))
+    aggregate["days"] = clean_days(value.get("days"))
     return aggregate
+
+
+def clean_bucket(value: Any) -> dict[str, int]:
+    if not isinstance(value, dict):
+        return empty_bucket()
+    return {
+        "inputTokens": number(value.get("inputTokens")),
+        "outputTokens": number(value.get("outputTokens")),
+        "cacheReadInputTokens": number(value.get("cacheReadInputTokens")),
+        "cacheCreationInputTokens": number(value.get("cacheCreationInputTokens")),
+    }
+
+
+def clean_model_usage(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    cleaned: dict[str, Any] = {}
+    for key, bucket in value.items():
+        if key and isinstance(bucket, dict):
+            cleaned[str(key)] = clean_bucket(bucket)
+    return cleaned
+
+
+def clean_days(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    cleaned: dict[str, Any] = {}
+    for key, day in value.items():
+        if not key or not isinstance(day, dict):
+            continue
+        sessions = day.get("sessions")
+        models = day.get("models")
+        cleaned[str(key)] = {
+            "tokens": number(day.get("tokens")),
+            "prompts": number(day.get("prompts")),
+            "sessions": sorted({str(item) for item in sessions if item}) if isinstance(sessions, list) else [],
+            "models": {str(name): number(total) for name, total in models.items() if name} if isinstance(models, dict) else {},
+        }
+    return cleaned
 
 
 def read_cache(path: Path) -> dict[str, Any]:
@@ -140,7 +183,10 @@ def local_day(milliseconds: Any) -> str:
     timestamp = number(milliseconds)
     if timestamp <= 0:
         return dt.datetime.now().astimezone().date().isoformat()
-    return dt.datetime.fromtimestamp(timestamp / 1000).astimezone().date().isoformat()
+    try:
+        return dt.datetime.fromtimestamp(timestamp / 1000).astimezone().date().isoformat()
+    except (OverflowError, OSError, ValueError):
+        return dt.datetime.now().astimezone().date().isoformat()
 
 
 def add_message(aggregate: dict[str, Any], session_id: str, entry: dict[str, Any]) -> None:
@@ -176,13 +222,26 @@ def add_message(aggregate: dict[str, Any], session_id: str, entry: dict[str, Any
 
 def database_identity(path: Path) -> dict[str, int]:
     stat = path.stat()
-    return {"device": stat.st_dev, "inode": stat.st_ino, "size": stat.st_size}
+    return {"device": stat.st_dev, "inode": stat.st_ino, "size": stat.st_size, "mtime": stat.st_mtime_ns}
+
+
+def database_reusable(previous: Any, identity: dict[str, int]) -> bool:
+    """Same file (device+inode) that did not shrink stays incremental and
+    rowid-based: normal appends often fit in already-allocated pages without
+    growing the file, so size/mtime alone cannot judge. A replaced database
+    is caught downstream by max(rowid) < lastRowId, which restarts from zero.
+    """
+    if not isinstance(previous, dict):
+        return False
+    if previous.get("device") != identity["device"] or previous.get("inode") != identity["inode"]:
+        return False
+    return number(previous.get("size")) <= identity["size"]
 
 
 def scan_database(path: Path, cached: dict[str, Any], force: bool) -> tuple[dict[str, Any], int, dict[str, int]]:
     identity = database_identity(path)
     previous = cached.get("database") or {}
-    reuse = not force and previous.get("device") == identity["device"] and previous.get("inode") == identity["inode"] and number(previous.get("size")) <= identity["size"]
+    reuse = not force and database_reusable(previous, identity)
     aggregate = normalise_aggregate(cached.get("aggregate")) if reuse else empty_aggregate()
     start_row_id = number(cached.get("lastRowId")) if reuse else 0
 
@@ -286,7 +345,7 @@ def limits_from_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:
             percent = float(window.get("percent")) / 100.0
         except (TypeError, ValueError):
             continue
-        if percent < 0:
+        if not math.isfinite(percent) or percent < 0:
             continue
         limits.append({"label": label, "percent": min(1.0, percent), "resetsAt": str(window.get("resetsAt") or "")})
     return limits
@@ -308,7 +367,7 @@ def limits_from_console_payload(payload: dict[str, Any]) -> list[dict[str, Any]]
         try:
             used = int(meter.get("usedMicroCents", 0))
             limit = int(meter.get("limitMicroCents", 0))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             continue
         if used < 0 or limit <= 0:
             continue
@@ -332,12 +391,14 @@ def fetch_limits(token: str, url: str = USAGE_URL) -> tuple[list[dict[str, Any]]
     try:
         with urllib.request.urlopen(request, timeout=5) as response:
             payload = json.loads(response.read().decode("utf-8"))
+        if not isinstance(payload, dict):
+            return None, "OpenCode Go limits unavailable.", True
         return limits_from_payload(payload), "", False
     except urllib.error.HTTPError as error:
         if error.code in (401, 403):
             return None, "OpenCode Go authentication expired. Run /connect in OpenCode.", False
         return None, "OpenCode Go limits unavailable.", True
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError):
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError, ValueError):
         return None, "OpenCode Go limits unavailable.", True
 
 
@@ -354,12 +415,14 @@ def fetch_console_limits(token: str, organization: str, url: str = CONSOLE_GO_ST
     try:
         with urllib.request.urlopen(request, timeout=5) as response:
             payload = json.loads(response.read().decode("utf-8"))
+        if not isinstance(payload, dict):
+            return None, "OpenCode Go limits unavailable.", True
         return limits_from_console_payload(payload), "", False
     except urllib.error.HTTPError as error:
         if error.code in (401, 403):
             return None, "OpenCode account session expired. Log in again with the OpenCode account flow.", False
         return None, "OpenCode Go limits unavailable.", True
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError):
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError, ValueError):
         return None, "OpenCode Go limits unavailable.", True
 
 
@@ -380,6 +443,26 @@ def base_record(stats: dict[str, Any], limits: list[dict[str, Any]], tier_label:
         record["retryAdvised"] = True
     record.update(stats)
     return record
+
+
+def apply_fresh_limits(fresh_limits: list[dict[str, Any]] | None, cached_limits: list[dict[str, Any]],
+                        status: str, retry: bool, stats: dict[str, Any]) -> tuple[list[dict[str, Any]], str, bool]:
+    """Merge a limits fetch into cached windows.
+
+    A reachable endpoint that reports no windows must not wipe the cache
+    with zeros presented as fresh quota: keep the cached windows and retry
+    soon instead.
+    """
+    if fresh_limits:
+        return fresh_limits, "", False
+    if fresh_limits is not None:
+        # Reachable but windowless.
+        if cached_limits or number(stats.get("totalPrompts")) > 0:
+            return cached_limits, "", True
+        return [], status, True
+    if cached_limits:
+        return cached_limits, "", retry
+    return [], status, retry
 
 
 def collect(force: bool, limits_only: bool) -> dict[str, Any]:
@@ -407,21 +490,19 @@ def collect(force: bool, limits_only: bool) -> dict[str, Any]:
     if oauth_token and organization:
         tier_label = "Go"
         fresh_limits, status, retry = fetch_console_limits(oauth_token, organization)
-        if fresh_limits is not None:
-            limits = fresh_limits
+        limits, help_text, retry = apply_fresh_limits(
+            fresh_limits, limits, status, retry, stats)
+        if fresh_limits:
             cache["limits"] = limits
-        elif not limits:
-            help_text = status
     elif not token:
         limits = []
     else:
         tier_label = "Go"
         fresh_limits, status, retry = fetch_limits(token)
-        if fresh_limits is not None:
-            limits = fresh_limits
+        limits, help_text, retry = apply_fresh_limits(
+            fresh_limits, limits, status, retry, stats)
+        if fresh_limits:
             cache["limits"] = limits
-        elif not limits:
-            help_text = status
     try:
         atomic_json(cache_file, cache)
     except OSError:
