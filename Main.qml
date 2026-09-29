@@ -95,8 +95,21 @@ Item {
       onRecordChanged: root.recordsChanged()
     }
 
-    onObjectAdded: (index, object) => root.rebuildAgents()
-    onObjectRemoved: (index, object) => root.rebuildAgents()
+    onObjectAdded: (index, object) => root.scheduleRebuildAgents()
+    onObjectRemoved: (index, object) => root.scheduleRebuildAgents()
+  }
+
+  property bool rebuildPending: false
+
+  function scheduleRebuildAgents() {
+    if (rebuildPending) return
+    rebuildPending = true
+    Qt.callLater(flushRebuildAgents)
+  }
+
+  function flushRebuildAgents() {
+    rebuildPending = false
+    rebuildAgents()
   }
 
   function rebuildAgents() {
@@ -109,7 +122,16 @@ Item {
     recordsChanged()
   }
 
+  property bool recordsChangePending: false
+
   function recordsChanged() {
+    if (recordsChangePending) return
+    recordsChangePending = true
+    Qt.callLater(flushRecordsChange)
+  }
+
+  function flushRecordsChange() {
+    recordsChangePending = false
     dataRevision++
     scheduleLimitsRetry()
     scheduleSync()
@@ -138,8 +160,14 @@ Item {
         advising.push(String(record.id))
     }
     retryAgentIds = advising
-    if (advising.length > 0) limitsRetry.restart()
-    else limitsRetry.stop()
+    if (advising.length === 0) {
+      limitsRetry.stop()
+      return
+    }
+    // Do not restart an armed timer: every recordsChanged would push the
+    // retry 30s out and a flapping record could starve it forever. The list
+    // above is already refreshed, so the armed run picks the latest scope.
+    if (!limitsRetry.running) limitsRetry.restart()
   }
 
   Component.onCompleted: {
@@ -204,7 +232,11 @@ Item {
 
   // -------------------------------------------------------------- refresh
 
-  property int refreshIntervalSec: Math.max(30, Number(setting("refreshIntervalSec", 900)))
+  property int refreshIntervalSec: {
+    var n = Number(setting("refreshIntervalSec", 900))
+    if (!isFinite(n)) return 900
+    return Math.max(30, Math.min(3600, n))
+  }
   property string pendingUpdateKind: ""
   property var pendingUpdateAgentIds: null
   property bool systemUpdateRunning: false
@@ -247,6 +279,29 @@ Item {
     }
   }
 
+  // A hung collector must not wedge the queue forever: every future run
+  // collapses into one pending slot while updateBusy() is true.
+  Timer {
+    id: updateWatchdog
+    interval: 120000
+    repeat: false
+    onTriggered: root.abortHungUpdate()
+  }
+
+  function armUpdateWatchdog() { updateWatchdog.restart() }
+  function disarmUpdateWatchdog() { if (!updateBusy()) updateWatchdog.stop() }
+
+  function abortHungUpdate() {
+    if (!updateBusy()) return
+    console.warn("agents", "Update timed out after 120s, aborting hung collector")
+    if (updateProcess.running) updateProcess.running = false
+    if (customCollectorProcess.running) customCollectorProcess.running = false
+    systemUpdateRunning = false
+    customUpdateRunning = false
+    customCollectorQueue = []
+    finishUpdate()
+  }
+
   function updateCommand(kind, agentIds) {
     var command = ["omarchy-agent-usage-update"]
     if (kind === "force") command.push("--force")
@@ -261,14 +316,44 @@ Item {
     return command
   }
 
+  function updateRank(kind) {
+    if (kind === "force") return 2
+    if (kind === "normal") return 1
+    return 0
+  }
+
+  function mergeUpdateAgentIds(a, b) {
+    if (!a || !b) return null
+    var seen = {}
+    var out = []
+    for (var i = 0; i < a.length; i++) {
+      var x = String(a[i])
+      if (!seen[x]) { seen[x] = true; out.push(x) }
+    }
+    for (var j = 0; j < b.length; j++) {
+      var y = String(b[j])
+      if (!seen[y]) { seen[y] = true; out.push(y) }
+    }
+    return out
+  }
+
   function runUpdate(kind, agentIds) {
     if (updateBusy()) {
-      // Collapse queued requests to one full rerun; a forced refresh outranks
-      // the cheaper kinds it might have been queued behind.
-      if (kind === "force" || root.pendingUpdateKind === "") {
+      // Collapse queued requests to one rerun; a fuller kind outranks the
+      // cheaper kinds it was queued behind, and scoped agent lists merge so
+      // no adviser's retry is lost.
+      var incoming = agentIds || null
+      if (root.pendingUpdateKind === "") {
         root.pendingUpdateKind = kind
-        root.pendingUpdateAgentIds = agentIds || null
+        root.pendingUpdateAgentIds = incoming
+      } else if (updateRank(kind) > updateRank(root.pendingUpdateKind)) {
+        root.pendingUpdateKind = kind
+        root.pendingUpdateAgentIds = mergeUpdateAgentIds(root.pendingUpdateAgentIds, incoming)
+      } else if (updateRank(kind) === updateRank(root.pendingUpdateKind)) {
+        // Same cost: union the scopes. A full (null) scope wins.
+        root.pendingUpdateAgentIds = mergeUpdateAgentIds(root.pendingUpdateAgentIds, incoming)
       }
+      // Cheaper kinds queued behind a fuller one are already covered.
       return
     }
     startUpdate(kind, agentIds)
@@ -279,6 +364,7 @@ Item {
     updateProcess.command = updateCommand(kind, agentIds)
     updateProcess.running = true
     startCustomCollectors(kind, agentIds)
+    armUpdateWatchdog()
   }
 
   function collectorId(path) {
@@ -317,6 +403,7 @@ Item {
 
   function finishUpdate() {
     if (updateBusy()) return
+    disarmUpdateWatchdog()
     rescanAgents()
     if (pendingUpdateKind !== "") {
       var kind = pendingUpdateKind
@@ -386,6 +473,8 @@ Item {
     var rank = {}
     if (order && typeof order === "object" && !Array.isArray(order)) {
       for (var id in order) {
+        if (!Object.prototype.hasOwnProperty.call(order, id)) continue
+        if (id === "__proto__" || id === "constructor" || id === "prototype") continue
         var position = Number(order[id])
         if (isFinite(position)) rank[String(id)] = position
       }
@@ -449,12 +538,30 @@ Item {
     persistProviderOrder(ids)
   }
 
+  function latestQueuedProviders() {
+    for (var i = settingsWriteQueue.length - 1; i >= 0; i--) {
+      var item = settingsWriteQueue[i]
+      if (item && item.key === "providers" && item.value && typeof item.value === "object") return item.value
+    }
+    return null
+  }
+
   function setProviderEnabled(providerId, enabled) {
     var map = {}
-    var current = settings && settings.providers ? settings.providers : {}
+    var queued = latestQueuedProviders()
+    var current = queued || (settings && settings.providers ? settings.providers : {})
     for (var id in current) {
-      if (current[id] && typeof current[id] === "object") map[id] = { enabled: current[id].enabled !== false }
-      else map[id] = { enabled: true }
+      if (!Object.prototype.hasOwnProperty.call(current, id)) continue
+      if (current[id] && typeof current[id] === "object") {
+        var copy = {}
+        for (var field in current[id]) {
+          if (Object.prototype.hasOwnProperty.call(current[id], field)) copy[field] = current[id][field]
+        }
+        copy.enabled = copy.enabled !== false
+        map[id] = copy
+      } else {
+        map[id] = { enabled: true }
+      }
     }
     var known = enabledProviders.concat(disabledProviders)
     for (var k = 0; k < known.length; k++) {
@@ -537,11 +644,26 @@ Item {
 
   // All-time keeps a quiet day from hiding an agent; today's counts admit a
   // machine whose only source is history.jsonl, which knows nothing older.
+  // Token-only agents (billing APIs with 0 prompts/sessions) must also show:
+  // check token counters, model tables, and the day chart, not just prompts.
   function providerHasData(p) {
-    return numberValue(p.totalPrompts) > 0 || numberValue(p.totalSessions) > 0
+    if (!p) return false
+    if (numberValue(p.totalPrompts) > 0 || numberValue(p.totalSessions) > 0
       || numberValue(p.activeDays) > 0 || numberValue(p.todayPrompts) > 0
-      || numberValue(p.todaySessions) > 0 || (p.limits && p.limits.length > 0)
-      || !!p.balance
+      || numberValue(p.todaySessions) > 0 || numberValue(p.todayTotalTokens) > 0) return true
+    if (p.limits && p.limits.length > 0) return true
+    if (!!p.balance) return true
+    var usage = p.modelUsage
+    if (usage && typeof usage === "object") {
+      for (var modelId in usage) return true
+    }
+    var days = p.recentDays
+    if (Array.isArray(days)) {
+      for (var i = 0; i < days.length; i++) {
+        if (numberValue(days[i] && days[i].messageCount) > 0) return true
+      }
+    }
+    return false
   }
 
   // A prepaid agent's credit ledger. Like rate limits, the balance is
@@ -563,7 +685,14 @@ Item {
   function displayProvider(record) {
     var stats = syncedStatsFor(String(record.id))
     var synced = !!stats
-    var deviceCount = synced ? Number(stats.deviceCount || aggregateData.deviceCount || 0) : 0
+    // The provider's own device count, never the fleet total: a provider
+    // present on 1 of 3 machines must say "1 device".
+    var deviceCount = 0
+    if (synced && stats) {
+      var rawCount = stats.deviceCount
+      deviceCount = (rawCount === undefined || rawCount === null) ? 0 : Number(rawCount)
+      if (!isFinite(deviceCount)) deviceCount = 0
+    }
 
     return {
       providerId: String(record.id),
@@ -698,6 +827,9 @@ Item {
     } else {
       syncDebounce.stop()
       syncRequestedWhileRunning = false
+      if (syncMkdirProcess.running) syncMkdirProcess.running = false
+      if (syncScanProcess.running) syncScanProcess.running = false
+      updateSyncRunning()
       aggregateData = ({})
       syncStatusText = ""
       syncRevision++
@@ -780,6 +912,12 @@ Item {
   }
 
   function parseSyncScanOutput(output) {
+    // A scan that finishes after sync was disabled must not repopulate data
+    // that syncSettingsChanged() just cleared.
+    if (!syncConfigured()) {
+      finishSyncRun()
+      return
+    }
     var lines = String(output || "").split("\n")
     var snapshots = []
     var currentPath = ""
@@ -868,10 +1006,42 @@ Item {
     for (var key in source) target[key] = combineNumber(additive, target[key], source[key])
   }
 
+  // A snapshot older than this no longer speaks for "today" and no longer
+  // wins account-scope merges: after a monthly reset the fresh low value
+  // must beat the stale pre-reset high. All-time totals still merge from
+  // every snapshot (disjoint local events), only the current-window figures
+  // need freshness.
+  readonly property double syncFreshMs: 48 * 3600 * 1000
+
+  function snapshotMs(snapshot) {
+    var ms = Number(snapshot && snapshot.updatedAtMs)
+    if (isFinite(ms) && ms > 0) return ms
+    try {
+      var parsed = Date.parse(snapshot && snapshot.updatedAt)
+      if (isFinite(parsed) && parsed > 0) return parsed
+    } catch (e) {}
+    return 0
+  }
+
   function aggregateSnapshots(snapshots) {
     var dates = recentDateStrings()
+    var today = dates[dates.length - 1]
+    var nowMs = Date.now()
     var devices = {}
     var providers = {}
+
+    // Dedupe by device first: a renamed deviceId (or a copied file) leaves
+    // the orphan plus the new file behind, and summing both would double
+    // every counter. Last write wins per device.
+    var freshestByDevice = {}
+    for (var s = 0; s < snapshots.length; s++) {
+      var snap = snapshots[s]
+      if (!snap || typeof snap !== "object") continue
+      var devKey = safeDeviceId(snap.deviceId || "device")
+      var ms = snapshotMs(snap)
+      var seen = freshestByDevice[devKey]
+      if (!seen || ms >= seen.ms) freshestByDevice[devKey] = { snapshot: snap, ms: ms }
+    }
 
     function providerAcc(id) {
       if (providers[id]) return providers[id]
@@ -898,10 +1068,20 @@ Item {
       return providers[id]
     }
 
-    for (var i = 0; i < snapshots.length; i++) {
-      var snapshot = snapshots[i]
+    for (var devId in freshestByDevice) {
+      var entry = freshestByDevice[devId]
+      var snapshot = entry.snapshot
+      var snapshotTime = entry.ms
       var device = safeDeviceId(snapshot.deviceId || "device")
       devices[device] = true
+      // Stale snapshots keep their all-time totals but must not move
+      // today's counters or win account-scope merges.
+      var fresh = snapshotTime > 0 && (nowMs - snapshotTime) <= syncFreshMs
+      var snapshotDay = ""
+      if (snapshotTime > 0) {
+        try { snapshotDay = dateString(new Date(snapshotTime)) } catch (e) { snapshotDay = "" }
+      }
+      var todayApplies = fresh && snapshotDay === today
       var snapshotProviders = snapshot.providers || {}
       for (var providerId in snapshotProviders) {
         var stats = snapshotProviders[providerId] || {}
@@ -914,29 +1094,40 @@ Item {
         // count prompts, so a missing value reads as true.
         acc.hasPromptStats = acc.hasPromptStats || stats.hasPromptStats !== false
         var additive = String(stats.scope || "device") !== "account"
-        acc.todayPrompts = combineNumber(additive, acc.todayPrompts, stats.todayPrompts)
-        acc.todaySessions = combineNumber(additive, acc.todaySessions, stats.todaySessions)
-        acc.todayTotalTokens = combineNumber(additive, acc.todayTotalTokens, stats.todayTotalTokens)
-        acc.totalPrompts = combineNumber(additive, acc.totalPrompts, stats.totalPrompts)
-        acc.totalSessions = combineNumber(additive, acc.totalSessions, stats.totalSessions)
+        // Account-scope figures are replicas of one upstream truth: only a
+        // fresh snapshot may move them, otherwise a stale pre-reset value
+        // outlives the reset via max(). Device-scope figures are disjoint
+        // local events and always add up.
+        var accountStale = !additive && !fresh
+        if (todayApplies) {
+          acc.todayPrompts = combineNumber(additive, acc.todayPrompts, stats.todayPrompts)
+          acc.todaySessions = combineNumber(additive, acc.todaySessions, stats.todaySessions)
+          acc.todayTotalTokens = combineNumber(additive, acc.todayTotalTokens, stats.todayTotalTokens)
+          combineObjectNumbers(additive, acc.todayTokensByModel, stats.todayTokensByModel || {})
+        }
+        if (!accountStale) {
+          acc.totalPrompts = combineNumber(additive, acc.totalPrompts, stats.totalPrompts)
+          acc.totalSessions = combineNumber(additive, acc.totalSessions, stats.totalSessions)
+        }
         // Active days overlap between machines, so union the dates rather than
         // summing counts. Snapshots written before activeDates existed only
         // carry a count; the widest one stands in for them.
         var activeDates = Array.isArray(stats.activeDates) ? stats.activeDates : []
         for (var ad = 0; ad < activeDates.length; ad++) acc.activeDates[String(activeDates[ad])] = true
         acc.activeDays = Math.max(acc.activeDays, numberValue(stats.activeDays))
-        combineObjectNumbers(additive, acc.todayTokensByModel, stats.todayTokensByModel || {})
 
         var recent = Array.isArray(stats.recentDays) ? stats.recentDays : []
         for (var r = 0; r < recent.length; r++) {
           var day = recent[r] || {}
           var date = String(day.date || "")
-          if (acc.recentByDay[date] !== undefined)
-            acc.recentByDay[date] = combineNumber(additive, acc.recentByDay[date], day.messageCount)
+          if (acc.recentByDay[date] === undefined) continue
+          if (accountStale) continue
+          acc.recentByDay[date] = combineNumber(additive, acc.recentByDay[date], day.messageCount)
         }
 
         var usage = stats.modelUsage || {}
         for (var modelId in usage) {
+          if (accountStale) break
           var bucket = acc.modelUsage[modelId]
           if (!bucket) bucket = acc.modelUsage[modelId] = emptyTokenBucket()
           combineObjectNumbers(additive, bucket, usage[modelId] || {})
@@ -1015,6 +1206,7 @@ Item {
       schemaVersion: 1,
       deviceId: syncEffectiveDeviceId,
       updatedAt: new Date().toISOString(),
+      updatedAtMs: Date.now(),
       providers: providerMap
     }
   }
@@ -1029,10 +1221,14 @@ Item {
 
   function formatTokenCount(n) {
     if (n === undefined || n === null) return "0"
-    if (n >= 1e9) return (n / 1e9).toFixed(1) + "B"
-    if (n >= 1e6) return (n / 1e6).toFixed(1) + "M"
-    if (n >= 1e3) return (n / 1e3).toFixed(1) + "K"
-    return String(n)
+    var v = Number(n)
+    if (!isFinite(v) || v <= 0) return "0"
+    // Thresholds sit half a step below the unit so rounding never prints
+    // "1000.0K" for 999999: that renders as "1.0M".
+    if (v >= 999500000) return (v / 1e9).toFixed(1) + "B"
+    if (v >= 999500) return (v / 1e6).toFixed(1) + "M"
+    if (v >= 999.5) return (v / 1e3).toFixed(1) + "K"
+    return String(Math.round(v))
   }
 
   function modelWordCase(word) {

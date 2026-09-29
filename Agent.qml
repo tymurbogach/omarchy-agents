@@ -12,23 +12,51 @@ Item {
   property string agentId: ""
   property string path: ""
   property var record: null
+  property bool reloadPending: false
 
   FileView {
+    id: fileView
     path: root.path
     watchChanges: true
     printErrors: false
-    onFileChanged: reload()
+    onFileChanged: root.scheduleReload()
     onLoaded: root.parse(text())
-    onLoadFailed: root.record = null
+    // Keep the last good record on transient read errors (ENOENT during an
+    // atomic replace, momentary permissions): clearing to null would flash
+    // the provider to zero and trigger a full recompute downstream.
+    onLoadFailed: function(error) { console.warn("agents", "Usage record unreadable, keeping last good", root.path, error) }
+  }
+
+  function scheduleReload() {
+    if (root.path === "") return
+    if (reloadPending) return
+    reloadPending = true
+    Qt.callLater(doReload)
+  }
+
+  function doReload() {
+    reloadPending = false
+    if (root.path === "") return
+    // FileView has no reload() guard for empty path; reassign triggers load.
+    fileView.reload()
   }
 
   function parse(content) {
+    var parsed = null
     try {
-      var parsed = JSON.parse(String(content || ""))
-      root.record = parsed && typeof parsed === "object" ? parsed : null
+      parsed = JSON.parse(String(content || ""))
     } catch (e) {
       console.warn("agents", "Ignoring bad usage record", root.path, e)
-      root.record = null
+      return
     }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return
+    if (typeof parsed.id !== "string" || parsed.id === "") return
+    if (root.agentId !== "" && parsed.id !== root.agentId) return
+    // Same content, same object: reassigning would emit recordChanged and
+    // cascade into dataRevision++ plus a full provider recompute.
+    try {
+      if (JSON.stringify(parsed) === JSON.stringify(root.record)) return
+    } catch (e) {}
+    root.record = parsed
   }
 }
