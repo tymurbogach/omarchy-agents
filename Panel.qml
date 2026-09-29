@@ -624,25 +624,6 @@ Panel {
             wrapMode: Text.WordWrap
           }
 
-          // ---------- Tabs header ----------
-          // Names the default agent (the lit chip). Hidden subscriptions
-          // restore from the plus button next to the hero title.
-          Text {
-            id: tabsNotice
-            visible: root.providers.length > 0
-            textFormat: Text.PlainText
-              text: root.defaultHint !== ""
-                ? ("● " + root.defaultHint)
-                : usage.defaultAgentName() !== ""
-                ? ("● " + usage.defaultAgentName() + " is the default — double-click a Claude, Codex or OpenCode tab to change it, right-click hides")
-                : "No default agent — double-click a Claude, Codex or OpenCode tab, right-click hides"
-              color: root.defaultHint !== "" ? root.foreground : root.dim
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
-            elide: Text.ElideRight
-            width: parent.width
-          }
-
           // ---------- Provider switch ----------
           // Chips drag to reorder: a transparent MouseArea above each Button
           // owns the left press, so taps select manually here and drags move
@@ -825,6 +806,25 @@ Panel {
               font.pixelSize: Style.font.caption
               wrapMode: Text.WordWrap
             }
+          }
+
+          // ---------- Tabs hint ----------
+          // Short one-line hint below the chips. Hidden subscriptions
+          // restore from the plus button next to the hero title.
+          Text {
+            id: tabsNotice
+            visible: root.providers.length > 0
+            textFormat: Text.PlainText
+              text: root.defaultHint !== ""
+                ? ("● " + root.defaultHint)
+                : usage.defaultAgentName() !== ""
+                ? ("● " + usage.defaultAgentName() + " is default • Double-click sets default • Right-click hides")
+                : "Double-click sets default • Right-click hides"
+              color: root.defaultHint !== "" ? root.foreground : root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            elide: Text.ElideRight
+            width: parent.width
           }
 
           // ---------- Balance / limits ----------
