@@ -160,7 +160,10 @@ Item {
     id: defaultAgentFile
     path: root.home + "/.config/omarchy/defaults/agent"
     watchChanges: true
-    atomicWrites: true
+    // In place, like omarchy-default-agent's own printf redirect: an
+    // atomic rename replaces the inode and this watcher stops following
+    // the path, freezing the marker and notice after our own write.
+    atomicWrites: false
     printErrors: false
     onFileChanged: reload()
     onLoaded: root.defaultAgentId = String(text() || "").trim().split("\n")[0].trim()
@@ -182,6 +185,9 @@ Item {
     var agent = omarchyAgentFor(providerId)
     if (agent === "") return
     defaultAgentFile.setText(agent + "\n")
+    // Optimistic: the watcher converges on its own, but the marker and
+    // notice must not wait for a filesystem round-trip.
+    defaultAgentId = agent
   }
 
   function defaultAgentName() {
