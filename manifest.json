@@ -40,6 +40,7 @@
           "enabled": true
         }
       },
+      "providerOrder": {},
       "refreshIntervalSec": 900,
       "syncMode": "Off",
       "syncDir": "",

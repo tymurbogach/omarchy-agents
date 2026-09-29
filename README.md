@@ -184,8 +184,13 @@ only adds the meter and the spent-of-funded line under the real figure.
 ## Interactions
 
 - Bar icon: left = panel, right = launch agent, middle = next subscription.
-- Panel: `h`/`l` switch subscription, `j`/`k` scroll, `r` or Enter refresh,
+- Panel: `h`/`l` switch subscription, `Shift+H`/`Shift+L` move it,
+  `x` hides it, `j`/`k` scroll, `r` or Enter refresh,
   Tab moves to the neighboring bar panel, Esc closes.
+- Chips: drag sideways to reorder, right-click for move/hide.
+  Hidden subscriptions collect in a HIDDEN tray with per-agent restore;
+  hiding also stops their scans. The switch row needs two visible agents,
+  so the last one cannot hide itself out of the bar.
 - IPC: `omarchy-shell omarchy.agents <open|close|toggle|refresh|next>`.
 
 ## Settings
@@ -196,6 +201,7 @@ top-level keys can be set with
 
 | Key | Default | What it does |
 |---|---|---|
+| `providerOrder` | `{}` | Subscription tab order, as `{id: position}`; new agents append alphabetically. The panel rewrites it when you drag, use `Shift+H`/`Shift+L`, or the chip menu. (An object, not an array: the shell IPC layer flattens array arguments.) |
 | `refreshIntervalSec` | `900` | How often the usage records regenerate |
 | `syncMode` | `"Off"` | `"On"` writes this machine's snapshot and merges the others |
 | `syncDir` | `""` | A folder synced by Syncthing, Dropbox, rsync, … |
