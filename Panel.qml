@@ -628,6 +628,8 @@ Panel {
             property int dragTo: -1
             property bool dragging: false
             property real dragShift: 0
+            property string lastTapId: ""
+            property double lastTapMs: 0
 
             function slotIndexAt(x) {
               if (root.providers.length === 0) return 0
@@ -693,7 +695,6 @@ Panel {
                   id: dragArea
                   anchors.fill: parent
                   acceptedButtons: Qt.LeftButton
-                  onDoubleClicked: root.doubleClickChip(modelData)
                   property real pressX: 0
                   property real pressRowX: 0
                   property bool moved: false
@@ -724,7 +725,15 @@ Panel {
                     providerSwitch.resetDrag()
                     if (wasDragging) {
                       usage.placeProviderInOrder(id, target)
+                    } else if (id === providerSwitch.lastTapId
+                        && Date.now() - providerSwitch.lastTapMs < 400) {
+                      // onDoubleClicked never arrives here reliably, so a
+                      // second tap on the same chip is the double-click.
+                      providerSwitch.lastTapId = ""
+                      root.doubleClickChip(modelData)
                     } else {
+                      providerSwitch.lastTapId = id
+                      providerSwitch.lastTapMs = Date.now()
                       root.cursorActive = true
                       root.selectProvider(index)
                     }
