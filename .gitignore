@@ -1,0 +1,6 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Runtime state belongs under the user's XDG directories.
+*.json.tmp
