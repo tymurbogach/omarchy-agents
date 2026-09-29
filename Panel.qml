@@ -429,6 +429,24 @@ Panel {
             meta: root.heroMeta(root.provider)
             foreground: root.foreground
             fontFamily: root.fontFamily
+            // Null when nothing hides so the loader collapses and the
+            // labels take the full width.
+            trailingControl: root.hiddenProviders.length > 0 ? hiddenPlusComponent : null
+
+            Component {
+              id: hiddenPlusComponent
+              Button {
+                text: "+" + root.hiddenProviders.length
+                bordered: true
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                fontSize: Style.font.bodySmall
+                verticalPadding: Style.spacing.controlPaddingY
+                tooltipText: "Show a hidden subscription"
+                onClicked: hiddenMenu.open = true
+                onHovered: function(isHovered) { if (isHovered) root.cursorActive = true }
+              }
+            }
 
             iconComponent: Component {
               Item {
@@ -485,48 +503,20 @@ Panel {
           }
 
           // ---------- Tabs header ----------
-          // Names the default agent (the lit chip) and holds the compact
-          // restore button for hidden subscriptions.
-          Item {
-            id: tabsHeader
+          // Names the default agent (the lit chip). Hidden subscriptions
+          // restore from the plus button next to the hero title.
+          Text {
+            id: tabsNotice
             visible: root.providers.length > 0
+            textFormat: Text.PlainText
+            text: usage.defaultAgentName() !== ""
+              ? ("● " + usage.defaultAgentName() + " is the default — double-click a tab to change it")
+              : "No default agent — double-click a tab (Claude, Codex, OpenCode)"
+            color: root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            elide: Text.ElideRight
             width: parent.width
-            implicitHeight: Math.max(tabsNotice.implicitHeight, hiddenButton.implicitHeight)
-
-            Text {
-              id: tabsNotice
-              textFormat: Text.PlainText
-              text: usage.defaultAgentName() !== ""
-                ? ("● " + usage.defaultAgentName() + " is the default — double-click a tab to change it")
-                : "No default agent — double-click a tab (Claude, Codex, OpenCode)"
-              color: root.dim
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
-              elide: Text.ElideRight
-              anchors.left: parent.left
-              anchors.right: hiddenButton.left
-              anchors.rightMargin: Style.spacing.sm
-              anchors.verticalCenter: parent.verticalCenter
-            }
-
-            Button {
-              id: hiddenButton
-              visible: root.hiddenProviders.length > 0
-              text: "+" + root.hiddenProviders.length
-              bordered: true
-              foreground: root.foreground
-              fontFamily: root.fontFamily
-              fontSize: Style.font.bodySmall
-              verticalPadding: Style.spacing.controlPaddingY
-              tooltipText: "Show a hidden subscription"
-              anchors.right: parent.right
-              anchors.verticalCenter: parent.verticalCenter
-              onClicked: {
-                hiddenMenu.anchorItem = hiddenButton
-                hiddenMenu.open = true
-              }
-              onHovered: function(isHovered) { if (isHovered) root.cursorActive = true }
-            }
           }
 
           // ---------- Hidden menu ----------
@@ -534,7 +524,7 @@ Panel {
           // listing hidden subscriptions to restore.
           PopupCard {
             id: hiddenMenu
-            anchorItem: button
+            anchorItem: hero
             bar: root.bar
             owner: null
             contentWidth: hiddenMenu.fittedContentWidth(Style.space(220))

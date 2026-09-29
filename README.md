@@ -192,7 +192,7 @@ only adds the meter and the spent-of-funded line under the real figure.
   agent Omarchy launches (Kimi and Fireworks have no Omarchy agent).
   The default agent's chip wears a dot underneath, and a notice above
   the tabs names it.
-- The `+N` at the top right lists hidden subscriptions to restore;
+- The `+N` next to the title lists hidden subscriptions to restore;
   hiding also stops their scans. The switch row needs two visible agents,
   so the last one cannot hide itself out of the bar.
 - IPC: `omarchy-shell omarchy.agents <open|close|toggle|refresh|next>`.
