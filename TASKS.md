@@ -56,7 +56,7 @@ Verificación: `python3 -m unittest discover -s tests` → 23 OK.
 - [x] `qmllint` no usable aquí (exit 255 también con el original: faltan imports Quickshell); sintaxis validada vía harness Node + revisión de diff.
 - [x] `tests/test_collect_integration.py`: `collect()` end-to-end con FS aislado (`HOME`/`XDG_*`/`KIMI_CODE_HOME` en tmp) y red mockeada: wire→record→cache, límites+ tier de la API, supervivencia a outage con `retryAdvised`, api-key flow de opencode.
 - [x] `main()` escribe el record en el state dir aislado; `purge --yes` borra solo sus ficheros y exige confirmación.
-Verificación: `python3 -m unittest discover -s tests` → 50 OK.
+Verificación: `python3 -m unittest discover -s tests` → 55 OK.
 
 ## Bloque 7 — UX / a11y
 - [x] `Accessible.*` en bar button, chips, `Meter` (ProgressBar + aviso), `LimitRow`, `DayRow`/`ModelRow` (exponen el texto del tooltip sin hover).
@@ -65,4 +65,4 @@ Verificación: `python3 -m unittest discover -s tests` → 50 OK.
 - [x] `formatTokenCount 999999→1.0M` (umbrales con medio paso), `formatMoney` JPY/KRW/VND sin decimales, `barThickness` + `BarGrow` compartidos.
 - [x] Edge detection del popup `+N`: al abrir se acota `x` al borde izquierdo del panel (try/catch, caso normal intacto). Sin verificación visual en barra real: si el popup se comporta raro en tu pantalla, revertir este hunk.
 - [x] Decisión `_common.py`: NO extraer. El shim de import dual que exigirían los tres contextos de ejecución (plugin runner como script, tests por spec, `--purge` manual) es peor que 150 líneas duplicadas de helpers estables y testeados.
-Verificación: 46 tests OK.
+Verificación: 55 tests OK.

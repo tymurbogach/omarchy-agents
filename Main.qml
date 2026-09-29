@@ -26,10 +26,20 @@ Item {
     id: listProcess
     running: false
     command: ["find", root.usageDir, "-maxdepth", "1", "-name", "*.json", "-printf", "%f\n"]
+    onExited: function(exitCode) {
+      // GNU find with -printf; a missing usageDir or a non-GNU find lands
+      // here instead of silently freezing the agent list.
+      if (exitCode !== 0) console.warn("agents", "Agent scan failed for", root.usageDir)
+    }
 
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: root.applyAgentListing(text)
+    }
+
+    stderr: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: if (text.trim() !== "") console.warn("agents", text.trim())
     }
   }
 
@@ -46,10 +56,18 @@ Item {
     id: collectorListProcess
     running: false
     command: ["find", root.collectorsDir, "-maxdepth", "1", "-type", "f", "-name", "*.py", "-print"]
+    onExited: function(exitCode) {
+      if (exitCode !== 0) console.warn("agents", "Collector scan failed for", root.collectorsDir)
+    }
 
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: root.applyCollectorListing(text)
+    }
+
+    stderr: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: if (text.trim() !== "") console.warn("agents", text.trim())
     }
   }
 
@@ -338,11 +356,15 @@ Item {
   }
 
   function runUpdate(kind, agentIds) {
+    // An empty scope list means "everywhere": normalize it to null up front
+    // so updateCommand (all, zero args) and startCustomCollectors (none,
+    // indexOf on []) stop disagreeing about what [] means.
+    var scope = (agentIds && agentIds.length > 0) ? agentIds : null
     if (updateBusy()) {
       // Collapse queued requests to one rerun; a fuller kind outranks the
       // cheaper kinds it was queued behind, and scoped agent lists merge so
       // no adviser's retry is lost.
-      var incoming = agentIds || null
+      var incoming = scope
       if (root.pendingUpdateKind === "") {
         root.pendingUpdateKind = kind
         root.pendingUpdateAgentIds = incoming
@@ -356,7 +378,7 @@ Item {
       // Cheaper kinds queued behind a fuller one are already covered.
       return
     }
-    startUpdate(kind, agentIds)
+    startUpdate(kind, scope)
   }
 
   function startUpdate(kind, agentIds) {
@@ -369,6 +391,7 @@ Item {
 
   function collectorId(path) {
     var name = String(path || "").split("/").pop()
+    if (name.slice(-3) !== ".py") return ""
     return name.slice(0, -3)
   }
 
@@ -377,6 +400,7 @@ Item {
     for (var i = 0; i < collectorPaths.length; i++) {
       var path = collectorPaths[i]
       var id = collectorId(path)
+      if (id === "") continue
       if (!providerEnabled(id)) continue
       if (agentIds && agentIds.indexOf(id) < 0) continue
       queue.push(path)
@@ -673,11 +697,14 @@ Item {
     var remaining = Number(raw.remaining)
     var funded = Number(raw.funded)
     if (!isFinite(remaining) || remaining < 0) return null
+    // A corrupt record could otherwise stretch the row with kilobytes of text.
+    var currency = String(raw.currency || "USD").substring(0, 8)
+    if (currency === "") currency = "USD"
     return {
       remaining: remaining,
       funded: isFinite(funded) && funded > 0 ? funded : 0,
       spent: Math.max(0, Number(raw.spent) || 0),
-      currency: String(raw.currency || "USD"),
+      currency: currency,
       estimated: raw.estimated === true
     }
   }
@@ -887,9 +914,10 @@ Item {
   function expandPath(path) {
     var value = String(path || "").trim()
     if (value === "") return ""
-    if (value === "~") return home
+    if (value === "~" || value === "$HOME" || value === "${HOME}") return home
     if (value.indexOf("~/") === 0) return home + value.substring(1)
     if (value.indexOf("$HOME/") === 0) return home + value.substring(5)
+    if (value.indexOf("${HOME}/") === 0) return home + value.substring(7)
     if (value.charAt(0) !== "/") return home + "/" + value
     return value
   }
@@ -969,7 +997,7 @@ Item {
 
   function numberValue(value) {
     var n = Number(value || 0)
-    return isFinite(n) ? Math.round(n) : 0
+    return isFinite(n) ? Math.max(0, Math.round(n)) : 0
   }
 
   function dateString(date) {

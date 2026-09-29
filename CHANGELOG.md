@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## 1.2.0
+- Review pass: `find` discovery processes warn on failure; `collectorId`
+  rejects non-`.py`; empty update scopes normalize to full runs;
+  `numberValue` clamps negatives; balance currency truncated; `expandPath`
+  handles `$HOME`/`${HOME}` bare forms.
 - `Main.qml`: queue collapse prefers the fuller update kind and merges agent
   scopes; `refreshIntervalSec` falls back to 900 on garbage and clamps to
   30–3600; `recordsChanged`/`rebuildAgents` batch via `callLater`; 120s

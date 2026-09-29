@@ -181,5 +181,66 @@ class KimiCacheTests(unittest.TestCase):
         self.assertEqual(kimi.read_cache(path)["tier"], "Membership")
 
 
+class OpencodeCredentialTests(unittest.TestCase):
+    def test_go_credential_shapes(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        path = Path(directory.name) / "auth.json"
+        path.write_text(json.dumps({"opencode-go": "secret"}), encoding="utf-8")
+        self.assertEqual(opencode.go_credential(path), "secret")
+        path.write_text(json.dumps({"opencode-go": {"apiKey": "  key  "}}), encoding="utf-8")
+        self.assertEqual(opencode.go_credential(path), "key")
+        path.write_text(json.dumps({"opencode-go": {"other": 1}}), encoding="utf-8")
+        self.assertEqual(opencode.go_credential(path), "")
+        self.assertEqual(opencode.go_credential(path.parent / "missing.json"), "")
+
+    def test_fetch_auth_errors_do_not_retry(self):
+        from urllib.error import HTTPError
+        err = HTTPError("https://x.test", 401, "no", {}, None)
+        with mock.patch("urllib.request.urlopen", side_effect=err):
+            limits, status, retry = opencode.fetch_limits("token")
+            self.assertIsNone(limits)
+            self.assertFalse(retry)
+            self.assertNotEqual(status, "")
+            limits, status, retry = opencode.fetch_console_limits("token", "org")
+            self.assertIsNone(limits)
+            self.assertFalse(retry)
+
+
+class KimiConfigTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self._patcher = mock.patch.dict(os.environ, {"KIMI_CODE_HOME": self.tmp.name})
+        self._patcher.start()
+        self.addCleanup(self._patcher.stop)
+
+    def test_managed_provider_reads_config(self):
+        (Path(self.tmp.name) / "config.toml").write_text(
+            '[providers."managed:kimi-code"]\nbase_url = "https://custom.test/api/"\n'
+            '[providers."managed:kimi-code".oauth]\noauth_host = "https://auth.custom.test"\n'
+            'key = "oauth/test"\n', encoding="utf-8")
+        provider = kimi.managed_provider()
+        self.assertEqual(provider["base_url"], "https://custom.test/api")
+        self.assertEqual(provider["oauth_host"], "https://auth.custom.test")
+        api_bases, oauth_hosts = kimi.configured_endpoints()
+        self.assertEqual(api_bases[0], "https://custom.test/api")
+        self.assertEqual(oauth_hosts[0], "https://auth.custom.test")
+
+    def test_managed_provider_missing_config_is_empty(self):
+        self.assertEqual(kimi.managed_provider()["base_url"], "")
+
+    def test_resolve_reports_network_without_stale_token(self):
+        cred_dir = Path(self.tmp.name) / "credentials"
+        cred_dir.mkdir(parents=True)
+        (cred_dir / "test.json").write_text(json.dumps({
+            "access_token": "expiring", "refresh_token": "r",
+            "expires_at": 1, "expires_in": 3600}), encoding="utf-8")
+        with mock.patch.object(kimi, "post_refresh_token", return_value=(None, "network")):
+            self.assertEqual(kimi.resolve_access_token(), ("", "network"))
+        with mock.patch.object(kimi, "post_refresh_token", return_value=(None, "auth")):
+            self.assertEqual(kimi.resolve_access_token(), ("", "auth"))
+
+
 if __name__ == "__main__":
     unittest.main()

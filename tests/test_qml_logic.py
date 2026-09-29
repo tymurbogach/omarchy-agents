@@ -14,7 +14,8 @@ ROOT = Path(__file__).parents[1]
 
 PANEL_FUNCTIONS = ["windowIsLong", "windowSpanMs", "labelTalksAboutTime", "windowTitle", "limitWindow",
                    "currencyPrefix", "formatMoney"]
-MAIN_FUNCTIONS = ["numberValue", "updateRank", "mergeUpdateAgentIds", "combineNumber", "formatTokenCount"]
+MAIN_FUNCTIONS = ["numberValue", "updateRank", "mergeUpdateAgentIds", "combineNumber", "formatTokenCount",
+                  "collectorId"]
 
 CHECKS = r"""
 check("session spelled out", windowTitle("Session (5-hour)") === "Session");
@@ -36,6 +37,7 @@ check("combine sum", combineNumber(true, 2, 3) === 5);
 check("combine max", combineNumber(false, 2, 3) === 3);
 check("combine stale max", combineNumber(false, 5, 3) === 5);
 check("number garbage", numberValue("fast") === 0);
+check("number clamps negatives", numberValue(-3) === 0);
 check("tokens round up to mega", formatTokenCount(999999) === "1.0M");
 check("tokens kilo", formatTokenCount(1500) === "1.5K");
 check("tokens zero", formatTokenCount(0) === "0");
@@ -43,6 +45,8 @@ check("tokens null", formatTokenCount(null) === "0");
 check("tokens garbage", formatTokenCount("fast") === "0");
 check("money usd", formatMoney(10, "USD") === "$10.00");
 check("money jpy rounds", formatMoney(10.5, "JPY") === "JPY 11");
+check("collector id", collectorId("/x/kimi.py") === "kimi");
+check("collector id rejects non-py", collectorId("/x/notes.txt") === "");
 """
 
 
