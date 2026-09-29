@@ -31,6 +31,11 @@ Panel {
   }
   readonly property var provider: providers.length > 0 ? providers[providerIndex] : null
 
+  // A refresh rebuilds the providers array and destroys the dragged chip's
+  // delegate mid-gesture: cancel the drag instead of stranding the
+  // insertion mark on screen.
+  onProvidersChanged: if (providerSwitch) providerSwitch.resetDrag()
+
   property bool cursorActive: false
 
   // Countdowns and "updated" read this instead of Date.now() so the
@@ -50,6 +55,10 @@ Panel {
   function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)) }
   function alpha(c, a) { return Qt.rgba(c.r, c.g, c.b, a) }
 
+  // One thickness and one grow animation for every bar in the panel, so the
+  // meters, day rows and model rows stay visually identical.
+  readonly property real barThickness: Math.max(Style.space(4), Math.round(Style.spacing.controlHeight * 0.14))
+
   function selectProvider(index) {
     if (providers.length === 0) return
     var wrapped = ((index % providers.length) + providers.length) % providers.length
@@ -62,7 +71,12 @@ Panel {
   }
 
   function hideSelectedProvider() {
-    if (provider) usage.setProviderEnabled(provider.providerId, false)
+    if (provider) hideProviderWithHint(provider.providerId, provider.providerName)
+  }
+
+  function hideProviderWithHint(providerId, providerName) {
+    usage.setProviderEnabled(providerId, false)
+    root.defaultHint = providerName + " hidden, restore from +N"
   }
 
   property bool hiddenExpanded: false
@@ -108,18 +122,27 @@ Panel {
     var text = String(label || "").toLowerCase()
     if (text.indexOf("month") >= 0 || text.indexOf("30-day") >= 0) return 30 * 24 * 3600 * 1000
     if (windowIsLong(text)) return 7 * 24 * 3600 * 1000
-    var hours = text.match(/(\d+)\s*-?\s*h(?:our)?\b/)
+    var hours = text.match(/(\d+)\s*-?\s*h(?:ours?)?\b/)
     if (hours) return Number(hours[1]) * 3600 * 1000
     var minutes = text.match(/(\d+)\s*-?\s*m(?:in(?:ute)?s?)?\b/)
     if (minutes) return Number(minutes[1]) * 60 * 1000
     return 0
   }
 
+  // A bare duration only names a window when the label talks about time:
+  // "5h window" is a session, but "Opus 5 (1M context)" is a model size.
+  function labelTalksAboutTime(text) {
+    return text.indexOf("window") >= 0 || text.indexOf("rolling") >= 0
+      || text.indexOf("reset") >= 0 || text.indexOf("limit") >= 0
+      || text.indexOf("quota") >= 0 || text.indexOf("usage") >= 0
+  }
+
   function windowTitle(label) {
     var text = String(label || "").toLowerCase()
     if (text.indexOf("month") >= 0) return "Monthly"
     if (windowIsLong(text)) return "Weekly"
-    if (text.indexOf("session") >= 0 || windowSpanMs(label) > 0) return "Session"
+    if (text.indexOf("session") >= 0) return "Session"
+    if (windowSpanMs(label) > 0 && labelTalksAboutTime(text)) return "Session"
     var plain = String(label || "").replace(/\s*\(.*\)\s*/, "").trim()
     return plain === "" ? "Limit" : plain
   }
@@ -191,7 +214,9 @@ Panel {
   function formatMoney(value, currency) {
     var amount = Number(value)
     if (!isFinite(amount)) amount = 0
-    return currencyPrefix(currency) + amount.toFixed(2)
+    var code = String(currency || "USD").toUpperCase()
+    if (code === "JPY" || code === "KRW" || code === "VND") return currencyPrefix(code) + Math.round(amount)
+    return currencyPrefix(code) + amount.toFixed(2)
   }
 
   function balanceDetailText(b) {
@@ -288,6 +313,7 @@ Panel {
 
   // Only speaks up when the numbers cover more than this machine.
   function footerText() {
+    if (usage.settingsWriteError !== "") return usage.settingsWriteError
     if (usage.syncStatusText !== "") return usage.syncStatusText
     if (provider && provider.syncEnabled && provider.syncDeviceCount > 0)
       return "Merged from " + provider.syncDeviceCount + " device" + (provider.syncDeviceCount === 1 ? "" : "s")
@@ -369,6 +395,10 @@ Panel {
     bar: root.bar
     text: "󱚣"
     active: root.alarming
+    Accessible.role: Accessible.Button
+    Accessible.name: "Agent subscriptions"
+    Accessible.description: root.alarming ? "A subscription limit is nearly reached"
+      : root.providers.length === 1 ? "1 subscription" : root.providers.length + " subscriptions"
     onPressed: function(buttonCode) {
       if (buttonCode === Qt.RightButton) root.launchAgent()
       else if (buttonCode === Qt.MiddleButton) root.selectProvider(root.providerIndex + 1)
@@ -481,7 +511,15 @@ Panel {
                   readonly property var selectPopupBorder: Border.localOrSurfaceSpec("popups", "border",
                     Color.popups.border, Color.popups.border, Style.normalBorderWidth)
 
-                  onOpened: root.hiddenPopupOpen = true
+                  onOpened: {
+                    root.hiddenPopupOpen = true
+                    // Right-aligned to the trigger, but never past the panel's
+                    // left edge when the bar sits near the screen border.
+                    try {
+                      var origin = selectTrigger.mapToItem(column, 0, 0)
+                      selectPopup.x = Math.max(selectTrigger.width - selectPopup.width, -origin.x)
+                    } catch (e) {}
+                  }
                   onClosed: root.hiddenPopupOpen = false
 
                   background: BorderSurface {
@@ -668,10 +706,13 @@ Panel {
                   fontFamily: root.fontFamily
                   fontSize: Style.font.bodySmall
                   verticalPadding: Style.spacing.controlPaddingY
+                  Accessible.role: Accessible.Button
+                  Accessible.name: modelData.providerName
+                  Accessible.description: index === root.providerIndex ? "Selected" : ""
                   // Left presses never reach this Button; dragArea below
                   // selects on tap. Right press hides the provider: restore
                   // it from the plus list above the tabs.
-                  onRightClicked: usage.setProviderEnabled(modelData.providerId, false)
+                  onRightClicked: root.hideProviderWithHint(modelData.providerId, modelData.providerName)
                   onHovered: function(isHovered) { if (isHovered) root.cursorActive = true }
                 }
 
@@ -756,7 +797,8 @@ Panel {
 
           // ---------- Status ----------
           BorderSurface {
-            visible: !!root.provider && String(root.provider.usageStatusText || "") !== ""
+            visible: !!root.provider && (String(root.provider.usageStatusText || "") !== ""
+              || String(root.provider.authHelpText || "") !== "")
             width: parent.width
             implicitHeight: statusText.implicitHeight + Style.spacing.xl * 2
             color: root.alpha(root.urgent, 0.10)
@@ -771,7 +813,13 @@ Panel {
               anchors.verticalCenter: parent.verticalCenter
               anchors.leftMargin: Style.space(12)
               anchors.rightMargin: Style.space(12)
-              text: root.provider ? String(root.provider.authHelpText || "") : ""
+              text: {
+                if (!root.provider) return ""
+                var status = String(root.provider.usageStatusText || "")
+                var help = String(root.provider.authHelpText || "")
+                if (status !== "" && help !== "" && help.indexOf(status) < 0) return status + " " + help
+                return help !== "" ? help : status
+              }
               color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
@@ -938,7 +986,7 @@ Panel {
                 row: modelData
                 // Scaled to the heaviest model, so the top row is always full —
                 // the same scale-to-peak the weekly chart uses for its busiest day.
-                share: modelData.total / Math.max(1, root.models[0].total)
+                share: root.models.length > 0 ? modelData.total / Math.max(1, root.models[0].total) : 0
               }
             }
           }
@@ -966,6 +1014,11 @@ Panel {
     property var window: null
 
     readonly property bool alarming: window && window.percent >= 0.9
+
+    Accessible.role: Accessible.StaticText
+    Accessible.name: (limitRow.window ? limitRow.window.title : "")
+      + " " + (limitRow.window && limitRow.window.percent >= 0 ? Math.round(limitRow.window.percent * 100) + "%" : "")
+    Accessible.description: limitRow.alarming ? "Limit nearly reached" : ""
 
     spacing: Style.space(6)
 
@@ -1028,7 +1081,11 @@ Panel {
     id: meter
     property real value: -1
     property bool alarming: false
-    property real thickness: Math.max(Style.space(4), Math.round(Style.spacing.controlHeight * 0.14))
+    property real thickness: root.barThickness
+
+    Accessible.role: Accessible.ProgressBar
+    Accessible.name: "Usage limit"
+    Accessible.description: meter.alarming ? "Limit nearly reached" : ""
 
     implicitHeight: thickness
 
@@ -1048,11 +1105,14 @@ Panel {
       color: meter.alarming ? root.urgent : root.foreground
 
       Behavior on width {
-        NumberAnimation { duration: 160; easing.type: Easing.OutCubic }
+        BarGrow {}
       }
     }
 
   }
+
+  // One shared grow animation for every bar width in the panel.
+  component BarGrow: NumberAnimation { duration: 160; easing.type: Easing.OutCubic }
 
   // One row per day: label, bar, tokens. Today is picked out in full
   // foreground so the week reads as a run-up to right now.
@@ -1061,6 +1121,12 @@ Panel {
     property var day: null
     property real ratio: 0
     property bool today: false
+
+    // Screen readers and touch assistive tech never hover: expose the same
+    // text the hover tooltip shows.
+    Accessible.role: Accessible.StaticText
+    Accessible.name: root.dayLabel(dayRow.day ? dayRow.day.date : "", dayRow.today)
+    Accessible.description: root.dayTooltip(dayRow.day, dayRow.today)
 
     implicitHeight: Math.max(dayLabel.implicitHeight, dayValue.implicitHeight) + Style.spacing.sm
 
@@ -1084,7 +1150,7 @@ Panel {
       anchors.leftMargin: Style.space(8)
       anchors.rightMargin: Style.space(10)
       anchors.verticalCenter: parent.verticalCenter
-      height: Math.max(Style.space(4), Math.round(Style.spacing.controlHeight * 0.14))
+      height: root.barThickness
       radius: height / 2
       color: root.track
 
@@ -1097,7 +1163,7 @@ Panel {
         color: dayRow.today ? root.foreground : root.alpha(root.foreground, 0.55)
 
         Behavior on width {
-          NumberAnimation { duration: 160; easing.type: Easing.OutCubic }
+          BarGrow {}
         }
       }
     }
@@ -1137,6 +1203,10 @@ Panel {
     property var row: null
     property real share: 0
 
+    Accessible.role: Accessible.StaticText
+    Accessible.name: modelRow.row ? modelRow.row.name : ""
+    Accessible.description: root.modelTooltip(modelRow.row)
+
     implicitHeight: modelName.implicitHeight + Style.spacing.lg
 
     Rectangle {
@@ -1154,7 +1224,7 @@ Panel {
       color: root.alpha(root.foreground, 0.14)
 
       Behavior on width {
-        NumberAnimation { duration: 160; easing.type: Easing.OutCubic }
+        BarGrow {}
       }
     }
 
