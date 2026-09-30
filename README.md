@@ -204,8 +204,8 @@ only adds the meter and the spent-of-funded line under the real figure.
   agent Omarchy launches.   Double-clicking Kimi or Fireworks answers in
   the notice instead and stays there until the next tap: they have no
   Omarchy agent, and writing them would break `omarchy agent`.
-  The default agent's chip wears a dot underneath, and a notice above
-  the tabs names it.
+  The default agent's chip wears a dot underneath, and a one-line hint
+  below the tabs reads `Double-click: default • Right-click: hide`.
 - The `+N` next to the title lists hidden subscriptions to restore;
   hiding also stops their scans. The switch row needs two visible agents,
   so the last one cannot hide itself out of the bar.

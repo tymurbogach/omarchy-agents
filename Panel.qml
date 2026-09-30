@@ -809,17 +809,16 @@ Panel {
           }
 
           // ---------- Tabs hint ----------
-          // Short one-line hint below the chips. Hidden subscriptions
-          // restore from the plus button next to the hero title.
+          // One short static line below the chips (the dot under a chip
+          // marks the default agent). Hidden subscriptions restore from
+          // the plus button next to the hero title.
           Text {
             id: tabsNotice
             visible: root.providers.length > 0
             textFormat: Text.PlainText
               text: root.defaultHint !== ""
                 ? ("● " + root.defaultHint)
-                : usage.defaultAgentName() !== ""
-                ? ("● " + usage.defaultAgentName() + " is default • Double-click sets default • Right-click hides")
-                : "Double-click sets default • Right-click hides"
+                : "Double-click: default • Right-click: hide"
               color: root.defaultHint !== "" ? root.foreground : root.dim
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption
