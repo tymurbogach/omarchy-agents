@@ -709,6 +709,20 @@ Item {
     }
   }
 
+  // Live limits prove auth works: the first-party collectors default
+  // authHelpText to a "run login" hint and only overwrite it on failure,
+  // so a successful limits fetch still carries the stale hint. Drop it
+  // only when no problem is reported: any real auth trouble sets
+  // usageStatusText too, and that keeps the help visible (an expired
+  // sign-in showing cached limits still warns).
+  function authHelpTextForRecord(record) {
+    var help = String(record.authHelpText || "")
+    if (help === "" || String(record.usageStatusText || "") !== "") return help
+    var limits = record.limits
+    if (Array.isArray(limits) && limits.length > 0) return ""
+    return help
+  }
+
   function displayProvider(record) {
     var stats = syncedStatsFor(String(record.id))
     var synced = !!stats
@@ -726,7 +740,7 @@ Item {
       providerName: String(record.name || record.id),
       ready: record.ready === true || synced,
       usageStatusText: String(record.usageStatusText || ""),
-      authHelpText: String(record.authHelpText || ""),
+      authHelpText: authHelpTextForRecord(record),
 
       // Rate limits and balances stay per-account and are never merged
       // across devices.

@@ -15,7 +15,7 @@ ROOT = Path(__file__).parents[1]
 PANEL_FUNCTIONS = ["windowIsLong", "windowSpanMs", "labelTalksAboutTime", "windowTitle", "limitWindow",
                    "currencyPrefix", "formatMoney"]
 MAIN_FUNCTIONS = ["numberValue", "updateRank", "mergeUpdateAgentIds", "combineNumber", "formatTokenCount",
-                  "collectorId"]
+                   "collectorId", "authHelpTextForRecord"]
 
 CHECKS = r"""
 check("session spelled out", windowTitle("Session (5-hour)") === "Session");
@@ -47,6 +47,10 @@ check("money usd", formatMoney(10, "USD") === "$10.00");
 check("money jpy rounds", formatMoney(10.5, "JPY") === "JPY 11");
 check("collector id", collectorId("/x/kimi.py") === "kimi");
 check("collector id rejects non-py", collectorId("/x/notes.txt") === "");
+check("stale login hint dropped with live limits", authHelpTextForRecord({usageStatusText: "", authHelpText: "Run `codex login` to authenticate.", limits: [{label: "5h"}]}) === "");
+check("help kept when status set", authHelpTextForRecord({usageStatusText: "Sign-in expired", authHelpText: "expired", limits: [{label: "5h"}]}) === "expired");
+check("help kept without limits", authHelpTextForRecord({usageStatusText: "", authHelpText: "Run `codex login` to authenticate.", limits: []}) === "Run `codex login` to authenticate.");
+check("empty help stays empty", authHelpTextForRecord({usageStatusText: "", authHelpText: "", limits: [{label: "5h"}]}) === "");
 """
 
 
