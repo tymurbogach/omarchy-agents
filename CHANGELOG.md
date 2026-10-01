@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased
+- `Agent.qml`: usage records are validated against the record contract at the
+  border (object with non-empty `id`, `schemaVersion` 1 when present, `limits`
+  as a list when present); contract breakers are rejected with a warning
+  instead of rendering as stale v1 data.
+- `Main.qml`: `authHelpTextForRecord` drops the stale first-party "run login"
+  hint when a record carries limits and reports no problem (TEMPORARY pending
+  the upstream collector fix, review 2027-01; see
+  `docs/upstream-codex-stale-authhelp.md`). New pure `recordUpdatedMs`
+  helper; `displayProvider` exposes it.
+- `Panel.qml`: corrupt limit percents (`NaN`/`Infinity`) no longer pass the
+  `limitWindows` filter. New pure `recordAgeText` helper; the footer shows
+  `Updated Xm ago` when a record is older than one refresh interval plus
+  margin, so a stale zero reads as stale.
+- `Panel.qml`: tabs hint shortened to one static line below the chips
+  (`Double-click: default • Right-click: hide`).
+- Tests: `test_qml_logic` extractor skips comments and quoted strings; golden
+  Codex/Claude record cases, `recordUpdatedMs`/`recordAgeText` cases, and the
+  infinite-percent guard. New `tests/test_sync_aggregation.py` covering
+  per-device last-wins dedupe, the 48h freshness window, today-only-from-today,
+  and account-scope max merge (the suite `TASKS.md` promised).
+
 ## 1.2.0
 - Review pass: `find` discovery processes warn on failure; `collectorId`
   rejects non-`.py`; empty update scopes normalize to full runs;

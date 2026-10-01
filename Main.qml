@@ -709,10 +709,12 @@ Item {
     }
   }
 
-  // Live limits prove auth works: the first-party collectors default
+  // TEMPORARY (review 2027-01): the first-party collectors default
   // authHelpText to a "run login" hint and only overwrite it on failure,
-  // so a successful limits fetch still carries the stale hint. Drop it
-  // only when no problem is reported: any real auth trouble sets
+  // so a successful limits fetch still carries the stale hint. Upstream
+  // fix belongs in omarchy-agent-usage-codex/-claude (clear the hint on
+  // success); see docs/upstream-codex-stale-authhelp.md. Drop it only
+  // when no problem is reported: any real auth trouble sets
   // usageStatusText too, and that keeps the help visible (an expired
   // sign-in showing cached limits still warns).
   function authHelpTextForRecord(record) {
@@ -721,6 +723,18 @@ Item {
     var limits = record.limits
     if (Array.isArray(limits) && limits.length > 0) return ""
     return help
+  }
+
+  // Epoch ms of the record's updatedAt (Ms field preferred, ISO fallback).
+  // 0 means unknown, never "now": callers treat 0 as no age information.
+  function recordUpdatedMs(record) {
+    var ms = Number(record && record.updatedAtMs)
+    if (isFinite(ms) && ms > 0) return ms
+    try {
+      var parsed = Date.parse(record && record.updatedAt)
+      if (isFinite(parsed) && parsed > 0) return parsed
+    } catch (e) {}
+    return 0
   }
 
   function displayProvider(record) {
@@ -741,6 +755,7 @@ Item {
       ready: record.ready === true || synced,
       usageStatusText: String(record.usageStatusText || ""),
       authHelpText: authHelpTextForRecord(record),
+      recordUpdatedMs: recordUpdatedMs(record),
 
       // Rate limits and balances stay per-account and are never merged
       // across devices.

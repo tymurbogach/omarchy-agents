@@ -13,9 +13,9 @@ from pathlib import Path
 ROOT = Path(__file__).parents[1]
 
 PANEL_FUNCTIONS = ["windowIsLong", "windowSpanMs", "labelTalksAboutTime", "windowTitle", "limitWindow",
-                   "currencyPrefix", "formatMoney"]
+                   "limitWindows", "currencyPrefix", "formatMoney", "recordAgeText"]
 MAIN_FUNCTIONS = ["numberValue", "updateRank", "mergeUpdateAgentIds", "combineNumber", "formatTokenCount",
-                   "collectorId", "authHelpTextForRecord"]
+                   "collectorId", "authHelpTextForRecord", "recordUpdatedMs"]
 
 CHECKS = r"""
 check("session spelled out", windowTitle("Session (5-hour)") === "Session");
@@ -51,20 +51,61 @@ check("stale login hint dropped with live limits", authHelpTextForRecord({usageS
 check("help kept when status set", authHelpTextForRecord({usageStatusText: "Sign-in expired", authHelpText: "expired", limits: [{label: "5h"}]}) === "expired");
 check("help kept without limits", authHelpTextForRecord({usageStatusText: "", authHelpText: "Run `codex login` to authenticate.", limits: []}) === "Run `codex login` to authenticate.");
 check("empty help stays empty", authHelpTextForRecord({usageStatusText: "", authHelpText: "", limits: [{label: "5h"}]}) === "");
+check("codex golden drops stale hint", authHelpTextForRecord({usageStatusText: "", authHelpText: "Run `codex login` to authenticate.", limits: [{label: "5h window", percent: 0, resetsAt: "2026-10-01T18:17:02+00:00"}, {label: "Weekly (7-day)", percent: 0.45, resetsAt: "2026-10-04T04:40:04+00:00"}], tierLabel: "plus"}) === "");
+check("limits null keeps help", authHelpTextForRecord({usageStatusText: "", authHelpText: "Run `codex login` to authenticate.", limits: null}) === "Run `codex login` to authenticate.");
+check("infinite percent dropped", limitWindows({limits: [{label: "5h", percent: 1/0}]}).length === 0);
+check("finite percent kept", limitWindows({limits: [{label: "5h", percent: 0.5, resetsAt: "", title: ""}]})[0].percent === 0.5);
+check("updatedMs prefers Ms field", recordUpdatedMs({updatedAtMs: 123, updatedAt: "2026-01-01T00:00:00.000Z"}) === 123);
+check("updatedMs falls back to ISO", recordUpdatedMs({updatedAt: "2026-01-01T00:00:00.000Z"}) === Date.parse("2026-01-01T00:00:00.000Z"));
+check("updatedMs unknown is zero", recordUpdatedMs({}) === 0);
+check("updatedMs garbage is zero", recordUpdatedMs({updatedAtMs: "fast", updatedAt: "nope"}) === 0);
+check("age fresh is empty", recordAgeText(1000000000000, 1000000030000) === "");
+check("age minutes", recordAgeText(1000000000000, 1000000300000) === "5m ago");
+check("age hours", recordAgeText(1000000000000, 1000007200000) === "2h ago");
+check("age days", recordAgeText(1000000000000, 1000259200000) === "3d ago");
+check("age unknown is empty", recordAgeText(0, 1000000300000) === "");
+check("age future is empty", recordAgeText(1000000005000, 1000000001000) === "");
 """
 
 
 def extract(source, name):
+    # Brace matching that skips line/block comments and quoted strings, so a
+    # "{" inside a comment or a help text no longer unbalances the scan.
+    # Regex literals with braces are still unsupported; none of the extracted
+    # helpers use them.
     start = source.index("function " + name + "(")
     brace = source.index("{", start)
     depth = 0
-    for i in range(brace, len(source)):
-        if source[i] == "{":
+    i = brace
+    n = len(source)
+    while i < n:
+        ch = source[i]
+        if ch == "/" and i + 1 < n and source[i + 1] == "/":
+            while i < n and source[i] != "\n":
+                i += 1
+            continue
+        if ch == "/" and i + 1 < n and source[i + 1] == "*":
+            i += 2
+            while i + 1 < n and not (source[i] == "*" and source[i + 1] == "/"):
+                i += 1
+            i += 2
+            continue
+        if ch in ("'", '"', "`"):
+            quote = ch
+            i += 1
+            while i < n and source[i] != quote:
+                if source[i] == "\\":
+                    i += 1
+                i += 1
+            i += 1
+            continue
+        if ch == "{":
             depth += 1
-        elif source[i] == "}":
+        elif ch == "}":
             depth -= 1
             if depth == 0:
                 return source[start:i + 1]
+        i += 1
     raise AssertionError("unbalanced " + name)
 
 

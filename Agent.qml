@@ -52,6 +52,17 @@ Item {
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return
     if (typeof parsed.id !== "string" || parsed.id === "") return
     if (root.agentId !== "" && parsed.id !== root.agentId) return
+    // Record contract: schemaVersion 1, limits as a list when present.
+    // A record that breaks the contract is rejected here so a corrupt or
+    // future-version collector cannot render as stale v1 data downstream.
+    if (parsed.schemaVersion !== undefined && parsed.schemaVersion !== 1) {
+      console.warn("agents", "Ignoring usage record with unsupported schemaVersion", root.path, parsed.schemaVersion)
+      return
+    }
+    if (parsed.limits !== undefined && parsed.limits !== null && !Array.isArray(parsed.limits)) {
+      console.warn("agents", "Ignoring usage record with non-list limits", root.path)
+      return
+    }
     // Same content, same object: reassigning would emit recordChanged and
     // cascade into dataRevision++ plus a full provider recompute.
     try {

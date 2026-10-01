@@ -44,6 +44,13 @@ written by `omarchy-agent-usage-update`. That command runs one
 on its refresh timer and whenever you ask for a refresh, and picks up any
 record that lands in the directory regardless of who wrote it.
 
+Records follow a small contract the panel enforces at the border: a JSON
+object with a non-empty `id`, `schemaVersion` 1 when present, and `limits`
+as a list when present. A record that breaks the contract is ignored with a
+warning instead of rendering as stale data. A record older than one refresh
+interval plus margin flags the footer with `Updated Xm ago`, so a stale zero
+reads as stale instead of a quiet day.
+
 This plugin also runs its bundled collectors from `collectors/` (currently
 `kimi.py` and `opencode.py`). A new bundled collector needs no QML change:
 its filename is its provider ID and it writes the same JSON contract.

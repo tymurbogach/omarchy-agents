@@ -166,7 +166,7 @@ Panel {
     for (var i = 0; i < list.length; i++) {
       var entry = list[i] || {}
       var percent = Number(entry.percent)
-      if (percent >= 0) out.push(limitWindow(entry.label, percent, entry.resetsAt, entry.title))
+      if (isFinite(percent) && percent >= 0) out.push(limitWindow(entry.label, percent, entry.resetsAt, entry.title))
     }
     return out
   }
@@ -196,6 +196,19 @@ Panel {
     if (days > 0) return days + "d " + (hours % 24) + "h"
     if (hours > 0) return hours + "h " + (minutes % 60) + "m"
     return Math.max(1, minutes) + "m"
+  }
+
+  // Short age for a record timestamp: "" when unknown or fresh (under a
+  // minute), otherwise "5m ago", "2h ago", "3d ago".
+  function recordAgeText(ms, nowMs) {
+    var age = Number(nowMs) - Number(ms)
+    if (!(Number(ms) > 0) || !(age >= 60000)) return ""
+    var minutes = Math.floor(age / 60000)
+    var hours = Math.floor(minutes / 60)
+    var days = Math.floor(hours / 24)
+    if (days > 0) return days + "d ago"
+    if (hours > 0) return hours + "h ago"
+    return minutes + "m ago"
   }
 
   // ---------------------------------------------------------------- balance
@@ -311,13 +324,21 @@ Panel {
       + " · cache write " + usage.formatTokenCount(row.cacheWrite)
   }
 
-  // Only speaks up when the numbers cover more than this machine.
+  // Only speaks up when the numbers cover more than this machine, or the
+  // record is older than one refresh interval plus margin: a stale zero
+  // must read as stale, not as a quiet day.
   function footerText() {
     if (usage.settingsWriteError !== "") return usage.settingsWriteError
     if (usage.syncStatusText !== "") return usage.syncStatusText
-    if (provider && provider.syncEnabled && provider.syncDeviceCount > 0)
-      return "Merged from " + provider.syncDeviceCount + " device" + (provider.syncDeviceCount === 1 ? "" : "s")
-    return ""
+    var parts = []
+    if (provider) {
+      var age = recordAgeText(provider.recordUpdatedMs, root.nowMs)
+      if (age !== "" && (root.nowMs - provider.recordUpdatedMs) > (usage.refreshIntervalSec + 120) * 1000)
+        parts.push("Updated " + age)
+      if (provider.syncEnabled && provider.syncDeviceCount > 0)
+        parts.push("Merged from " + provider.syncDeviceCount + " device" + (provider.syncDeviceCount === 1 ? "" : "s"))
+    }
+    return parts.join(" · ")
   }
 
   // Agents that ship a white mark carry an `assets/<id>-light.svg` twin for
