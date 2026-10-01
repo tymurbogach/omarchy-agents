@@ -15,7 +15,7 @@ ROOT = Path(__file__).parents[1]
 PANEL_FUNCTIONS = ["windowIsLong", "windowSpanMs", "labelTalksAboutTime", "windowTitle", "limitWindow",
                    "limitWindows", "currencyPrefix", "formatMoney", "recordAgeText"]
 MAIN_FUNCTIONS = ["numberValue", "updateRank", "mergeUpdateAgentIds", "combineNumber", "formatTokenCount",
-                   "collectorId", "authHelpTextForRecord", "recordUpdatedMs"]
+                   "collectorId", "hasLocalCollector", "updateCommand", "authHelpTextForRecord", "recordUpdatedMs"]
 
 CHECKS = r"""
 check("session spelled out", windowTitle("Session (5-hour)") === "Session");
@@ -47,6 +47,12 @@ check("money usd", formatMoney(10, "USD") === "$10.00");
 check("money jpy rounds", formatMoney(10.5, "JPY") === "JPY 11");
 check("collector id", collectorId("/x/kimi.py") === "kimi");
 check("collector id rejects non-py", collectorId("/x/notes.txt") === "");
+let collectorPaths = ["/x/kimi.py"];
+let settings = {providers: {}};
+check("codex stays in Omarchy update without local collector", updateCommand("normal", null).indexOf("codex") === -1);
+collectorPaths = ["/x/codex.py"];
+let codexAt = updateCommand("normal", null).indexOf("codex");
+check("codex excluded with local collector", codexAt > 0 && updateCommand("normal", null)[codexAt - 1] === "--except");
 check("stale login hint dropped with live limits", authHelpTextForRecord({usageStatusText: "", authHelpText: "Run `codex login` to authenticate.", limits: [{label: "5h"}]}) === "");
 check("help kept when status set", authHelpTextForRecord({usageStatusText: "Sign-in expired", authHelpText: "expired", limits: [{label: "5h"}]}) === "expired");
 check("help kept without limits", authHelpTextForRecord({usageStatusText: "", authHelpText: "Run `codex login` to authenticate.", limits: []}) === "Run `codex login` to authenticate.");

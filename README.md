@@ -52,7 +52,7 @@ interval plus margin flags the footer with `Updated Xm ago`, so a stale zero
 reads as stale instead of a quiet day.
 
 This plugin also runs its bundled collectors from `collectors/` (currently
-`kimi.py` and `opencode.py`). A new bundled collector needs no QML change:
+`codex.py`, `kimi.py`, and `opencode.py`). A new bundled collector needs no QML change:
 its filename is its provider ID and it writes the same JSON contract.
 
 Adding an agent therefore never touches this plugin: ship a collector that
@@ -64,9 +64,9 @@ Marks that read well on both themes ship a single file: `claude.svg` and
 `fireworks.svg` (brand orange) have no `-light` twin by design; `codex`,
 `kimi` and `opencode` ship both variants.
 
-Collectors come from two places. `claude`, `codex` and `fireworks` are
-external: `omarchy-agent-usage-update` runs one `omarchy-agent-usage-<agent>`
-collector per agent outside this repo. `kimi` and `opencode` are bundled in
+Collectors come from two places. `claude` and `fireworks` are external:
+`omarchy-agent-usage-update` runs one `omarchy-agent-usage-<agent>` collector
+per agent outside this repo. `codex`, `kimi`, and `opencode` are bundled in
 `collectors/` and maintained here. The table below covers both; only the
 bundled rows are auditable in this repository.
 
@@ -77,6 +77,14 @@ bundled rows are auditable in this repository.
 | `fireworks` | Estimated prepaid balance: configured funding minus rated account costs | Fireworks billing API, grouped by day and model for the last 30 days |
 | `kimi` | Kimi Code membership quota (rolling 5-hour + 7-day windows) via the OAuth login | Kimi Code native session wire logs, plus OpenCode rows on a Kimi provider |
 | `opencode` | OpenCode Go rolling, weekly, and monthly allowances when connected | OpenCode messages from Zen and Go |
+
+## Codex
+
+Requirements: Python 3 and the Omarchy `omarchy-agent-usage-codex` command.
+No plugin configuration is required. The bundled collector delegates local
+statistics to that command. It retries the transient Codex limits failure up
+to three times, after one and two seconds. If all attempts fail, it preserves
+the latest local statistics and asks the panel to retry limits after 30 seconds.
 
 ## OpenCode Go
 
@@ -152,9 +160,8 @@ new collector list. Do not modify `/usr/share/omarchy/`.
 
 ## Remove
 
-Before removal, purge the bundled collectors from the installed plugin
-directory (external `claude`/`codex`/`fireworks` state is owned by their own
-CLIs and stays untouched):
+Before removal, purge the Kimi and OpenCode collectors from the installed
+plugin directory (external `claude` and `fireworks` state stays untouched):
 
 ```bash
 python3 collectors/kimi.py --purge --yes
@@ -163,6 +170,10 @@ python3 collectors/opencode.py --purge --yes
 
 Each command removes only its own cache and usage record.
 Then disable and remove `cyberdyne.agents` with the Omarchy plugin commands.
+The Codex wrapper writes
+`~/.local/state/omarchy/agents/usage/codex.json`. The record stays after
+removal because Omarchy also owns this shared usage directory. Delete it only
+after confirmation that no other Codex usage collector needs it.
 
 Claude limits need a signed-in CLI; without credentials the panel says so and
 falls back to local stats only. A non-default Claude directory is honored via

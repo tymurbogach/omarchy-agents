@@ -324,10 +324,15 @@ Item {
     var command = ["omarchy-agent-usage-update"]
     if (kind === "force") command.push("--force")
     if (kind === "limits") command.push("--limits-only")
+    var excluded = {}
     var providers = settings && settings.providers ? settings.providers : {}
     for (var id in providers) {
-      if (providers[id] && providers[id].enabled === false) command.push("--except", id)
+      if (providers[id] && providers[id].enabled === false) excluded[id] = true
     }
+    // Codex has a bundled wrapper when this file exists. Keep Omarchy's
+    // generic update from racing it and overwriting its retry-aware record.
+    if (hasLocalCollector("codex")) excluded.codex = true
+    for (var excludedId in excluded) command.push("--except", excludedId)
     if (agentIds) {
       for (var i = 0; i < agentIds.length; i++) command.push(agentIds[i])
     }
@@ -393,6 +398,13 @@ Item {
     var name = String(path || "").split("/").pop()
     if (name.slice(-3) !== ".py") return ""
     return name.slice(0, -3)
+  }
+
+  function hasLocalCollector(id) {
+    for (var i = 0; i < collectorPaths.length; i++) {
+      if (collectorId(collectorPaths[i]) === id) return true
+    }
+    return false
   }
 
   function startCustomCollectors(kind, agentIds) {

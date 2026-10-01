@@ -1,6 +1,11 @@
 # Changelog
 
 ## Unreleased
+- `collectors/codex.py`: Codex now uses a bundled retry-aware wrapper. It
+  preserves Omarchy local statistics, retries transient RPC startup failures
+  three times, writes records atomically, and requests one 30-second retry.
+- `Main.qml`: when the bundled Codex collector exists, the Omarchy update
+  command excludes Codex so it cannot overwrite the retry-aware record.
 - `Agent.qml`: usage records are validated against the record contract at the
   border (object with non-empty `id`, `schemaVersion` 1 when present, `limits`
   as a list when present); contract breakers are rejected with a warning
@@ -21,6 +26,9 @@
   infinite-percent guard. New `tests/test_sync_aggregation.py` covering
   per-device last-wins dedupe, the 48h freshness window, today-only-from-today,
   and account-scope max merge (the suite `TASKS.md` promised).
+
+## 1.2.2
+- Publish the Codex retry collector and its update integration.
 
 ## 1.2.0
 - Review pass: `find` discovery processes warn on failure; `collectorId`
