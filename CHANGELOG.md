@@ -25,7 +25,7 @@
   Codex/Claude record cases, `recordUpdatedMs`/`recordAgeText` cases, and the
   infinite-percent guard. New `tests/test_sync_aggregation.py` covering
   per-device last-wins dedupe, the 48h freshness window, today-only-from-today,
-  and account-scope max merge (the suite `TASKS.md` promised).
+   and account-scope max merge (see `Main.qml` `aggregateSnapshots`).
 
 ## 1.2.2
 - Publish the Codex retry collector and its update integration.

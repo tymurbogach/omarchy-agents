@@ -56,4 +56,4 @@ so clearing on success loses no signal.
 limits and reports no problem. Marked TEMPORARY, review 2027-01. Remove it
 once the upstream collectors clear the hint on success.
 
-Issue filed at: <TODO: paste URL after filing>
+Issue: not filed upstream yet. File it by hand and link it here.
