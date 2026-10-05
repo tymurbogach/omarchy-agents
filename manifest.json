@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
-  "id": "cyberdyne.agents",
+  "id": "tymurbogach.agents",
   "name": "My Agents",
-  "version": "1.2.2",
-  "author": "cyberdyne",
+  "version": "1.2.3",
+  "author": "tymurbogach",
   "license": "MIT",
   "description": "Usage and limits for Omarchy agents, with extensible bundled collectors for additional providers.",
   "kinds": [

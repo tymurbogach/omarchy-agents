@@ -151,9 +151,9 @@ The command removes only the Kimi cache and the Kimi usage record.
 
 This repository replaces the existing local clone with the same plugin ID.
 Copy the current plugin to this repository before you remove it. Then disable
-and remove `cyberdyne.agents`, add this repository with `omarchy plugin add`,
+and remove `tymurbogach.agents`, add this repository with `omarchy plugin add`,
 and enable it in the previous bar section. Omarchy owns the installed copy in
-`~/.config/omarchy/plugins/cyberdyne.agents/`.
+`~/.config/omarchy/plugins/tymurbogach.agents/`.
 
 Run `omarchy restart shell` after installation if the shell does not reload the
 new collector list. Do not modify `/usr/share/omarchy/`.
@@ -169,7 +169,7 @@ python3 collectors/opencode.py --purge --yes
 ```
 
 Each command removes only its own cache and usage record.
-Then disable and remove `cyberdyne.agents` with the Omarchy plugin commands.
+Then disable and remove `tymurbogach.agents` with the Omarchy plugin commands.
 The Codex wrapper writes
 `~/.local/state/omarchy/agents/usage/codex.json`. The record stays after
 removal because Omarchy also owns this shared usage directory. Delete it only

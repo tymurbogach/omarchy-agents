@@ -638,7 +638,7 @@ Item {
   function widgetSettingId(alternate) {
     // The bar entry carries this plugin's manifest id; the canonical module
     // name is the fallback if the entry was placed under it instead.
-    return alternate ? "omarchy.agents" : "cyberdyne.agents"
+    return alternate ? "omarchy.agents" : "tymurbogach.agents"
   }
 
   function runNextSettingsWrite() {

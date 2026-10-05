@@ -1,6 +1,10 @@
 # Changelog
 
 ## Unreleased
+- Plugin id `cyberdyne.agents` is now `tymurbogach.agents` (v1.2.3).
+  Reinstall required: remove the old id, add the new one, put it back on the
+  bar. Provider settings live on the bar entry, so re-apply them after the
+  move. IPC target (`omarchy.agents`) is unchanged.
 - `collectors/codex.py`: Codex now uses a bundled retry-aware wrapper. It
   preserves Omarchy local statistics, retries transient RPC startup failures
   three times, writes records atomically, and requests one 30-second retry.
